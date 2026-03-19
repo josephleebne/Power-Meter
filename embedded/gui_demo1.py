@@ -75,7 +75,7 @@ def read_data():
 # Create main window
 window = tk.Tk()
 window.title("AC/DC Power Meter")
-window.geometry("600x200")
+window.geometry("800x200")
 window.resizable(width=True, height=True)
 
 # Top bar: port selection and buttons

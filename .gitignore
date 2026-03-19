@@ -1,0 +1,23 @@
+# macOS junk
+.DS_Store
+
+# Object files
+*.o
+*.d
+
+# Executables / binaries
+*.elf
+*.hex
+*.bin
+*.out
+*.map
+*.srec
+*.lss
+
+# Build folders
+Debug/
+Release/
+build/
+
+*~
+.*~
