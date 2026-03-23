@@ -10,8 +10,8 @@
 #include <avr/io.h>
 
 #define FOSC 1000000 // Clock Speed
-#define BAUD 9600
-#define UBRR (FOSC/(16*BAUD))-1
+#define BAUD 4800
+#define UBRR (((FOSC / (8UL * BAUD)) + 1) / 2) - 1
 
 void USART_Init(void)
 {
