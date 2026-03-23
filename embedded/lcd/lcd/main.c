@@ -171,6 +171,7 @@ uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void
 
 int main(void)
 {
+	DDRC |= (1 << 5);
 	/*
 		Select a setup procedure for your display from here: https://github.com/olikraus/u8g2/wiki/u8g2setupc
 		1. Arg: Address of an empty u8g2 structure
@@ -179,6 +180,15 @@ int main(void)
 		4. Arg: Defined in this code itself (see above)
 	*/
 	//u8g2_Setup_st7565_ea_dogm132_f( &u8g2, U8G2_R0, u8x8_byte_4wire_sw_spi, u8x8_avr_gpio_and_delay );
+
+	//BLINK LED 3 TIMES BEFORE DRAWING
+	for (int j = 0; j < 3; j++) {
+	PORTC ^= (1 << 5);
+	for (volatile long i = 0; i < 200000; i++);
+	PORTC ^= (1 << 5);
+	for (volatile long i = 0; i < 200000; i++);
+	}
+
 	u8g2_Setup_st7920_s_128x64_f(&u8g2, U8G2_R0, u8x8_byte_4wire_sw_spi, u8x8_avr_gpio_and_delay);
 	
 	u8g2_InitDisplay(&u8g2);
@@ -189,7 +199,15 @@ int main(void)
 	u8g2_SetFont(&u8g2, u8g2_font_ncenB14_tr);
 	u8g2_DrawStr(&u8g2, 1, 18, "U8g2 on AVR");
 	u8g2_SendBuffer(&u8g2);
-		
+
+	//BLINK LED 3 TIMES AFTER DRAWING
+	for (int j = 0; j < 3; j++) {
+	PORTC ^= (1 << 5);
+	for (volatile long i = 0; i < 200000; i++);
+	PORTC ^= (1 << 5);
+	for (volatile long i = 0; i < 200000; i++);
+	}
+	
 	while(1){
 	}
 }
