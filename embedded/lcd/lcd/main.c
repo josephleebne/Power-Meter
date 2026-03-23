@@ -184,9 +184,9 @@ int main(void)
 	//BLINK LED 3 TIMES BEFORE DRAWING
 	for (int j = 0; j < 3; j++) {
 	PORTC ^= (1 << 5);
-	for (volatile long i = 0; i < 200000; i++);
+	for (volatile long i = 0; i < 50000; i++);
 	PORTC ^= (1 << 5);
-	for (volatile long i = 0; i < 200000; i++);
+	for (volatile long i = 0; i < 50000; i++);
 	}
 
 	u8g2_Setup_st7920_s_128x64_f(&u8g2, U8G2_R0, u8x8_byte_4wire_sw_spi, u8x8_avr_gpio_and_delay);
@@ -203,9 +203,9 @@ int main(void)
 	//BLINK LED 3 TIMES AFTER DRAWING
 	for (int j = 0; j < 3; j++) {
 	PORTC ^= (1 << 5);
-	for (volatile long i = 0; i < 200000; i++);
+	for (volatile long i = 0; i < 50000; i++);
 	PORTC ^= (1 << 5);
-	for (volatile long i = 0; i < 200000; i++);
+	for (volatile long i = 0; i < 50000; i++);
 	}
 	
 	while(1){
