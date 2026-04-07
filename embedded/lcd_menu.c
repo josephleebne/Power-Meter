@@ -49,6 +49,7 @@
 #include <util/delay.h>
 #include <avr/eeprom.h>
 #include <math.h>
+#include <stdio.h>
 
 #define DISPLAY_CLK_DIR DDRB
 #define DISPLAY_CLK_PORT PORTB
@@ -93,12 +94,13 @@ void DrawScreen();
 u8g2_t u8g2;
 float MenuSettings[] = {0, 0, 0, 0, 4, 1}; // Measurement 1, Measurement 2, Measurement 3, Measurement 4, BacklightIndex, TurnsRatio
 int MenuSettingsEEPROMAddresses[] = {MEASUREMENT_1_ADDRESS, MEASUREMENT_2_ADDRESS, MEASUREMENT_3_ADDRESS, MEASUREMENT_4_ADDRESS, BACKLIGHT_ADDRESS, TURNS_RATIO_ADDRESS};
+char* MeasurementName[13] = {"DCV (V):","DCC (A):","DCP (W):","ACV (V):","ACC (A):","ACF (Hz):","ACPD (°):","ACP (W):","ACRP (VAR):","ACAP (VA):", "ACPF:","ACPV (V):","ACPC (A):"};
 int Menu; // 0 = main screen, 1 = measurement select, 2 = settings, 3 = edit turns ratio
-int SelectPosition[2];
-int ButtonTurn = 1;
-int Backlight[] = {0, 64, 128, 192, 255};
-int BacklightIndexCopy;
-float TurnsRatioCopy;
+int SelectPosition[2]; // 0 = row position for the main screen, 1 = secondary position used for other menus
+int ButtonTurn = 1; // Button turn baton
+int Backlight[] = {0, 64, 128, 192, 255}; // Values for OCR0B for Backlight
+int BacklightIndexCopy; // Copy of Backlight Index
+float TurnsRatioCopy; // Copy of Transformer Turns Ratio
 
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr) {
 	uint8_t cycles;
@@ -204,8 +206,7 @@ int main(void)
 	u8g2_SendBuffer(&u8g2);
 		
 	while(1){
-		DrawScreen();
-		if (!Menu) {
+		if (!Menu) { // The different menu screens.
 			MainScreen();
 		} else if (Menu == 1) {
 			MeasurementSelect();
@@ -230,6 +231,8 @@ void lcd_init(void){
 	
 	u8g2_InitDisplay(&u8g2);
 	u8g2_SetPowerSave(&u8g2, 0);
+	
+	u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr);
 }
 
 void init(){
@@ -243,21 +246,21 @@ void init(){
 	TCCR0A |= (1 << WGM01) | (1 << WGM00) | (1 << COM0B1); // set fast PWM Mode and non-inverting mode
 	TCCR0B |= (1 << CS01);  // set prescaler to 8
     
-    if ((eeprom_read_word((uint16_t)MEASUREMENT_1_ADDRESS) < 1) || (eeprom_read_word((uint16_t*) MEASUREMENT_1_ADDRESS) > 13)){
-		for (int i = 0; i < 6; i++){
+    if ((eeprom_read_word((uint16_t)MEASUREMENT_1_ADDRESS) < 1) || (eeprom_read_word((uint16_t*) MEASUREMENT_1_ADDRESS) > 13)) { // If the value at the 1st measurement address is within this range, then it is safe to say that values are stored in the addresses for all the menu settings.
+		for (int i = 0; i < 6; i++){ // Write initial values to menu setting addresses
 			if (i == 4) {
-				eeprom_write_word((uint16_t*)MenuSettingsEEPROMAddresses[i], 4);
+				eeprom_write_word((uint16_t*)MenuSettingsEEPROMAddresses[i], 4); // Initial Backlight value. 4 is 100% Backlight.
 			} else {
 				eeprom_write_word((uint16_t*)MenuSettingsEEPROMAddresses[i], 1);
 			}
 		}
     } else {
 		for (int i = 0; i < 6; i++){
-			MenuSettings[0] = eeprom_read_word ((uint16_t*)MenuSettingsEEPROMAddresses[i]);
+			MenuSettings[0] = eeprom_read_word ((uint16_t*)MenuSettingsEEPROMAddresses[i]); // Read values from addresses if values are already stored there.
 		}
     }
 	
-	OCR0B = Backlight[(int)MenuSettings[4]];
+	OCR0B = Backlight[(int)MenuSettings[4]]; // Set Backlight
 }
 
 /*
@@ -269,13 +272,31 @@ void init(){
 ((PIND & (1<<7))) // Left
 */
 
+void MainScreenDraw() {
+	u8g2_DrawLine(&u8g2, 45, 0, 45, 53); // Line separating measurement name from measurement value
+	for (int i=0; i<5; i++) {
+		if (i<4) {
+			u8g2_DrawStr(&u8g2, 1, 9 + (i * 11), MeasurementName[(int)MenuSettings[i]]); // MenuSettings stores the index for which measurement it is
+			u8g2_DrawStr(&u8g2, 50, 9 + (i * 11), "{INSERT MEASUREMENT VALUES}"); // Each row is 9 high with 2 space in between
+		} else {
+			u8g2_DrawStr(&u8g2, 1, 9 + (i * 11), "Settings");
+		}
+		if (i == SelectPosition[0]) { // Selection Box
+			u8g2_SetDrawColor(&u8g2, 1);
+			u8g2_DrawBox(&u8g2, 0, (i * 11) - 1, 128, 11);
+			u8g2_SetDrawColor(&u8g2, 0);
+		}
+	}
+}
+
 void MainScreen() {
-	if (ButtonTurn){
+	MainScreenDraw(); // Refreshes display constantly to display changing values.
+	if (ButtonTurn) { // Attempts to prevent pressing of multiple buttons.
 		if ((PINB & (1<<1)) || (PIND & (1<<6))) { // Enter and right
 			ButtonTurn = 0;
-			if ((SelectPosition[0]<4)) {
+			if (SelectPosition[0]<4) {
 				Menu = 1; // Measurement select menu
-				SelectPosition[1] = eeprom_read_word ((uint16_t*)MenuSettingsEEPROMAddresses[SelectPosition[0]]);
+				SelectPosition[1] = eeprom_read_word((uint16_t*)MenuSettingsEEPROMAddresses[SelectPosition[0]]); // Set position at the index of the measurement for Measurement select screen.
 			} else if (SelectPosition[0] == 4) {
 				Menu = 2; // Settings menu
 				SelectPosition[1] = 0;
@@ -300,17 +321,38 @@ void MainScreen() {
 	}
 }
 
-void MeasurementSelect(){
+void MeasurementSelectDraw() {
+	u8g2_DrawLine(&u8g2, 45, 0, 45, 53); // Line separating measurement name from measurement value
+	for (int i=0; i<5; i++) {
+		if (i<4) {
+			u8g2_DrawStr(&u8g2, 1, 9 + (i * 11), MeasurementName[(int)MenuSettings[i]]);
+			if (i < SelectPosition[0]) { // Shows measurements above select
+				u8g2_DrawStr(&u8g2, 50, 9 + (i * 11), MeasurementName[SelectPosition[1] - (SelectPosition[0] - i)]);
+			} else { // Shows measurements below select
+				u8g2_DrawStr(&u8g2, 50, 9 + (i * 11), MeasurementName[SelectPosition[1] + (i - SelectPosition[0])]);
+			}
+		} else {
+			u8g2_DrawStr(&u8g2, 1, 9 + (i * 11), "Settings");
+		}
+		if (i == SelectPosition[0]) {  // Selection Box
+			u8g2_SetDrawColor(&u8g2, 1);
+			u8g2_DrawBox(&u8g2, 0, (i * 11) - 1, 128, 11);
+			u8g2_SetDrawColor(&u8g2, 0);
+		}
+	}
+}
+
+void MeasurementSelect(){	
 	if (ButtonTurn){
 		if ((PINB & (1<<1)) || (PINB & (1<<7))) { // Enter and left
 			ButtonTurn = 0;
-			eeprom_write_word((uint16_t*)MenuSettingsEEPROMAddresses[SelectPosition[0]], SelectPosition[1]+1);
+			MenuSettings[SelectPosition[0]] = SelectPosition[1]; // Confirm measurement selection
+			eeprom_write_word((uint16_t*)MenuSettingsEEPROMAddresses[SelectPosition[0]], SelectPosition[1] + 1); // Update in EEPROM
 			Menu--;
 			ButtonTurn = 1;
 		} else if (PINB & (1<<4)) { // Back
 			ButtonTurn = 0;
 			Menu--;
-			SelectPosition[1] = 0;
 			ButtonTurn = 1;
 		} else if (PINB & (1<<6)) { // Up
 			ButtonTurn = 0;
@@ -318,6 +360,7 @@ void MeasurementSelect(){
 			if (SelectPosition[1]<0) {
 				SelectPosition[1] = 12;
 			}
+			MeasurementSelectDraw();
 			ButtonTurn = 1;
 		} else if (PINB & (1<<7)) { // Down
 			ButtonTurn = 0;
@@ -325,21 +368,45 @@ void MeasurementSelect(){
 			if (SelectPosition[1]>12) {
 				SelectPosition[1] = 0;
 			}
+			MeasurementSelectDraw();
 			ButtonTurn = 1;
 		}
 	}
 }
 
-void Settings(){
+void SettingsDraw() {
+	//u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr); // Reset font after returning from TurnsRatioMenuDraw
+	u8g2_DrawLine(&u8g2, 45, 0, 45, 20);
+	u8g2_DrawStr(&u8g2, 1, 9, "Backlight:");
+	u8g2_DrawTriangle(&u8g2, 55, 1, 50, 5, 55, 9); // Arrows
+	u8g2_DrawTriangle(&u8g2, 70, 1, 75, 5, 70, 9);
+	char Index[1];
+	sprintf(Index , "%d", BacklightIndexCopy); // Convert BacklightIndexCopy to string
+	u8g2_DrawStr(&u8g2, 58, 9, Index);
+	
+	u8g2_DrawStr(&u8g2, 1, 20, "Transformer Turns Ratio:");
+	char TurnsRatio[6];
+	sprintf(TurnsRatio , "%f", MenuSettings[5]); // Convert TurnsRatio to string
+	u8g2_DrawStr(&u8g2, 50, 20, TurnsRatio);
+	for (int i=0; i<2; i++) {
+		if (i == SelectPosition[0]) {   // Selection Box
+			u8g2_SetDrawColor(&u8g2, 1);
+			u8g2_DrawBox(&u8g2, 0, (i * 11) - 1, 128, 11);
+			u8g2_SetDrawColor(&u8g2, 0);
+		}
+	}
+}
+
+void Settings() {
 	if (ButtonTurn){
 		if (PINB & (1<<1)) { // Enter
-			if (SelectPosition[1] == 1) {
+			if (SelectPosition[1] == 1) { // Into transformer turns ratio edit screen
 				ButtonTurn = 0;
 				Menu++;
-				TurnsRatioCopy = eeprom_read_word ((uint16_t*)MenuSettingsEEPROMAddresses[5]);
+				TurnsRatioCopy = MenuSettings[5];
 				SelectPosition[1] = 0;
 				ButtonTurn = 1;
-			} else {
+			} else { // Confirm Backlight setting
 				ButtonTurn = 0;
 				Menu--;
 				MenuSettings[4] = BacklightIndexCopy;
@@ -347,10 +414,10 @@ void Settings(){
 				eeprom_write_word((uint16_t*)MenuSettingsEEPROMAddresses[4], MenuSettings[4]);
 				ButtonTurn = 1;
 			}
-		} else if ((PINB & (1<<4))) { // Back
+		} else if ((PINB & (1<<4))) { // Back. Exit settings without saving backlight setting changes
 			ButtonTurn = 0;
 			Menu--;
-			BacklightIndexCopy = (int)MenuSettings[4];
+			BacklightIndexCopy = (int)MenuSettings[4]; // Return without saving Backlight changes
 			OCR0B = Backlight[(int)MenuSettings[4]];
 			ButtonTurn = 1;
 		} else if ((PINB & (1<<6))) { // Up
@@ -359,6 +426,7 @@ void Settings(){
 			if (SelectPosition[1] < 0) {
 				SelectPosition[1] = 1;
 			}
+			SettingsDraw();
 			ButtonTurn = 1;
 		} else if ((PINB & (1<<7))) { // Down
 			ButtonTurn = 0;
@@ -366,68 +434,111 @@ void Settings(){
 			if (SelectPosition[1] > 1) {
 				SelectPosition[1] = 0;
 			}
+			SettingsDraw();
 			ButtonTurn = 1;
-		} else if ((PIND & (1<<6)) && (SelectPosition[1] == 0)) { // Right
+		} else if ((PIND & (1<<6)) && (SelectPosition[1] == 0)) { // Right. Increase backlight setting
 			ButtonTurn = 0;
 			BacklightIndexCopy++;
 			if (BacklightIndexCopy > 4) {
 				BacklightIndexCopy = 0;
 			}
 			OCR0B = Backlight[BacklightIndexCopy];
+			SettingsDraw();
 			ButtonTurn = 1;
-		} else if ((PIND & (1<<7)) && (SelectPosition[1] == 0)) { // Left
+		} else if ((PIND & (1<<7)) && (SelectPosition[1] == 0)) { // Left. Decrease backlight setting
 			ButtonTurn = 0;
 			BacklightIndexCopy--;
 			if (BacklightIndexCopy < 0) {
 				BacklightIndexCopy = 4;
 			}
 			OCR0B = Backlight[BacklightIndexCopy];
+			SettingsDraw();
 			ButtonTurn = 1;
+		}
+	}
+}
+
+void TurnsRatioMenuDraw() {
+	int DecimalOffset; // Used to offset the x position due to the decimal
+	
+	//SettingsDraw(); // Display normal settings screen
+	
+	char TurnsRatio[6];
+	sprintf(TurnsRatio , "%f", TurnsRatioCopy); // Convert TurnsRatioCopy to string
+	u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
+	
+	//u8g2_SetFont(&u8g2, u8g2_font_VCR_OSD_mn); // Change to larger font
+	for (int i=0; i<5; i++) { // Exact values yet to be confirmed
+		if (i == 2) { // Account for decimal
+			DecimalOffset = 3; 
+		}
+		u8g2_DrawTriangle(&u8g2, (i * 5) - 2 + DecimalOffset, 27, (i * 5) + DecimalOffset, 22, (i * 5) + 2 + DecimalOffset, 27); // Arrows
+		u8g2_DrawTriangle(&u8g2, (i * 5) - 2 + DecimalOffset, 46, (i * 5) + DecimalOffset, 51, (i * 5) + 2 + DecimalOffset, 46);
+		if (i == SelectPosition[0]) {
+			u8g2_SetDrawColor(&u8g2, 1);
+			u8g2_DrawBox(&u8g2, (i * 5) + DecimalOffset, 60, 5, 11);
+			u8g2_SetDrawColor(&u8g2, 0);
 		}
 	}
 }
 
 void TurnsRatioMenu(){
 	if (ButtonTurn){
-		if ((PINB & (1<<1))) { // Enter
+		if ((PINB & (1<<1))) { // Enter. Confirm New Turn Ratio
 			ButtonTurn = 0;
-			MenuSettings[5] = TurnsRatioCopy;
+			MenuSettings[5] = TurnsRatioCopy; 
 			eeprom_write_word((uint16_t*)MenuSettingsEEPROMAddresses[5], TurnsRatioCopy);
 			Menu--;
 			ButtonTurn = 1;
-		} else if ((PINB & (1<<4))) { // Back
+		} else if ((PINB & (1<<4))) { // Back. Return without saving Turns Ratio changes
 			ButtonTurn = 0;
 			Menu--;
 			SelectPosition[1] = 1;
 			ButtonTurn = 1;
 		} else if ((PINB & (1<<6))) { // Up
 			ButtonTurn = 0;
-			if ((10 / pow(10,SelectPosition[1])) == 9) {
-				TurnsRatioCopy -= (90 / pow(10,SelectPosition[1]));
+			
+			char TurnsRatio[6];
+			sprintf(TurnsRatio , "%f", TurnsRatioCopy); // Convert TurnsRatioCopy to string
+			u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
+			
+			if ((TurnsRatio[SelectPosition[1]] - '0') == 9) { // Check specific digit
+				TurnsRatioCopy -= (90 / pow(10, SelectPosition[1])); // Up from 9, cycle to 0
 			} else {
-				TurnsRatioCopy += (10 / pow(10,SelectPosition[1]));
+				TurnsRatioCopy += (10 / pow(10, SelectPosition[1])); // plus 10 / (10 ^ digit place). e.g. if 1st digit: 10 / 10 ^ 0 = 10 / 1 = 10
 			}
+			TurnsRatioMenuDraw();
 			ButtonTurn = 1;
 		} else if ((PINB & (1<<7))) { // Down
 			ButtonTurn = 0;
-			if ((10 / pow(10,SelectPosition[1])) == 0) {
-				TurnsRatioCopy += (90 / pow(10, SelectPosition[1]));
+			
+			char TurnsRatio[6];
+			sprintf(TurnsRatio , "%f", TurnsRatioCopy); // Convert TurnsRatioCopy to string
+			u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
+			
+			if ((TurnsRatio[SelectPosition[1]] - '0') == 0) {  // Check specific digit
+				TurnsRatioCopy += (90 / pow(10, SelectPosition[1])); // Down from 0, cycle to 9
 			} else {
-				TurnsRatioCopy -= (10 / pow(10, SelectPosition[1]));
+				TurnsRatioCopy -= (10 / pow(10, SelectPosition[1])); // subtract 10 / (10 ^ digit place). e.g. if 1st digit: 10 / 10 ^ 0 = 10 / 1 = 10
 			}
+			TurnsRatioMenuDraw();
 			ButtonTurn = 1;
 		} else if ((PIND & (1<<6))) { // Right
 			ButtonTurn = 0;
 			SelectPosition[1]++;
+			if (SelectPosition[1] > 4) {
+				SelectPosition[1] = 0;
+			}
+			TurnsRatioMenuDraw();
 			ButtonTurn = 1;
 		} else if ((PIND & (1<<7))) { // Left
 			ButtonTurn = 0;
 			SelectPosition[1]--;
+			if (SelectPosition[1] < 0) {
+				SelectPosition[1] = 4;
+			}
+			TurnsRatioMenuDraw();
 			ButtonTurn = 1;
 		}
 	}
-}
-
-void DrawScreen(){
-	
 }
