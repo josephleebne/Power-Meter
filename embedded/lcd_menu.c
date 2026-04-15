@@ -45,7 +45,7 @@
 
 
 #include <avr/io.h>
-#include <u8g2.h>
+#include "u8g2.h"
 #include <util/delay.h>
 #include <avr/eeprom.h>
 #include <math.h>
@@ -71,6 +71,13 @@
 #define DISPLAY_RESET_PORT PORTB
 #define DISPLAY_RESET_PIN 0
 
+#define ENTER (PINB & (1<<1))
+#define BACK (PINB & (1<<4))
+#define UP (PINB & (1<<6))
+#define DOWN (PINB & (1<<7))
+#define RIGHT (PIND & (1<<6))
+#define LEFT (PIND & (1<<7))
+
 #define P_CPU_NS (1000000000UL / F_CPU)
 
 #define MEASUREMENT_1_ADDRESS 0
@@ -84,6 +91,8 @@ uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr
 uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 void lcd_init();
 void init();
+void DrawPCIcon();
+void DrawTime();
 void MainScreen();
 void MeasurementSelect();
 void Settings();
@@ -94,7 +103,7 @@ void DrawScreen();
 u8g2_t u8g2;
 float MenuSettings[] = {0, 0, 0, 0, 4, 1}; // Measurement 1, Measurement 2, Measurement 3, Measurement 4, BacklightIndex, TurnsRatio
 int MenuSettingsEEPROMAddresses[] = {MEASUREMENT_1_ADDRESS, MEASUREMENT_2_ADDRESS, MEASUREMENT_3_ADDRESS, MEASUREMENT_4_ADDRESS, BACKLIGHT_ADDRESS, TURNS_RATIO_ADDRESS};
-char* MeasurementName[13] = {"DCV (V):","DCC (A):","DCP (W):","ACV (V):","ACC (A):","ACF (Hz):","ACPD (°):","ACP (W):","ACRP (VAR):","ACAP (VA):", "ACPF:","ACPV (V):","ACPC (A):"};
+char* MeasurementName[13] = {"DCV (V):","DCC (A):","DCP (W):","ACV (V):","ACC (A):","ACF (Hz):","ACPD (Â°):","ACP (W):","ACRP (VAR):","ACAP (VA):", "ACPF:","ACPV (V):","ACPC (A):"};
 int Menu; // 0 = main screen, 1 = measurement select, 2 = settings, 3 = edit turns ratio
 int SelectPosition[2]; // 0 = row position for the main screen, 1 = secondary position used for other menus
 int ButtonTurn = 1; // Button turn baton
@@ -112,10 +121,10 @@ uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr
 			break;
 		case U8X8_MSG_DELAY_100NANO:    // delay arg_int * 100 nano seconds
 			// Approximate best case values...
-#define CALL_CYCLES 26UL
-#define CALC_CYCLES 4UL
-#define RETURN_CYCLES 4UL
-#define CYCLES_PER_LOOP 4UL
+			#define CALL_CYCLES 26UL
+			#define CALC_CYCLES 4UL
+			#define RETURN_CYCLES 4UL
+			#define CYCLES_PER_LOOP 4UL
 
 			cycles = (100UL * arg_int) / (P_CPU_NS * CYCLES_PER_LOOP);
 
@@ -144,7 +153,7 @@ uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr
 uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr)
 {
 	// Re-use library for delays
-
+	
 	switch(msg)
 	{
 		case U8X8_MSG_GPIO_AND_DELAY_INIT:  // called once during init phase of u8g2/u8x8
@@ -201,11 +210,15 @@ int main(void)
     
 	/* full buffer example, setup procedure ends in _f */
 	u8g2_ClearBuffer(&u8g2);
-	u8g2_SetFont(&u8g2, u8g2_font_ncenB14_tr);
-	u8g2_DrawStr(&u8g2, 1, 18, "U8g2 on AVR");
+	//u8g2_SetFont(&u8g2, u8g2_font_ncenB14_tr);
+    u8g2_SetDrawColor(&u8g2, 1);
+    u8g2_DrawBox(&u8g2, 0, 40, 128, 7);
+	u8g2_DrawStr(&u8g2, 1, 18, "U8g2 uduy AVR");
 	u8g2_SendBuffer(&u8g2);
-		
+	
 	while(1){
+        u8g2_ClearBuffer(&u8g2);
+		DrawTime();
 		if (!Menu) { // The different menu screens.
 			MainScreen();
 		} else if (Menu == 1) {
@@ -215,6 +228,10 @@ int main(void)
 		} else if (Menu == 3) {
 			TurnsRatioMenu();
 		}
+		if (PIND & (1<<2)) {
+			DrawPCIcon();
+		}
+        u8g2_SendBuffer(&u8g2);
 	}
 }
 
@@ -226,19 +243,19 @@ void lcd_init(void){
 		3. Arg: Protocol procedure (u8g2-byte), list is here: https://github.com/olikraus/u8g2/wiki/Porting-to-new-MCU-platform#communication-callback-eg-u8x8_byte_hw_i2c
 		4. Arg: Defined in this code itself (see above)
 	*/
-	//u8g2_Setup_st7565_ea_dogm132_f( &u8g2, U8G2_R0, u8x8_byte_4wire_sw_spi, u8x8_avr_gpio_and_delay );
 	u8g2_Setup_st7920_s_128x64_f(&u8g2, U8G2_R0, u8x8_byte_4wire_sw_spi, u8x8_avr_gpio_and_delay);
 	
 	u8g2_InitDisplay(&u8g2);
 	u8g2_SetPowerSave(&u8g2, 0);
 	
 	u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr);
+	u8g2_SetDrawColor(&u8g2, 2);
 }
 
 void init(){
     // Set input ports for buttons
     DDRB &= ~(1<<1)|(1<<4)|(1<<6)|(1<<7); // 1 and 4 are the Enter and Back buttons
-    DDRD &= ~(1<<6)|(1<<7);
+    DDRD &= ~(1<<2)|(1<<6)|(1<<7); // 2 is for checking oc connection
     
     // Set output port for LCD backlight
 	DDRD |= (1<<5);
@@ -263,28 +280,30 @@ void init(){
 	OCR0B = Backlight[(int)MenuSettings[4]]; // Set Backlight
 }
 
-/*
-(PINB & (1<<1)) // Enter
-((PINB & (1<<4))) // Back
-((PINB & (1<<6))) // Up
-((PINB & (1<<7))) // Down
-((PIND & (1<<6))) // Right
-((PIND & (1<<7))) // Left
-*/
+void DrawPCIcon() {
+	u8g2_SetDrawColor(&u8g2, 1);
+	u8g2_DrawFrame(&u8g2, 122, 58, 6, 4);
+	u8g2_DrawBox(&u8g2, 123, 63, 2, 1);
+	u8g2_SetDrawColor(&u8g2, 2);
+}
+
+void DrawTime() {
+	u8g2_DrawStr(&u8g2, 60, 61, "{INSERT DATETIME}");
+}
 
 void MainScreenDraw() {
 	u8g2_DrawLine(&u8g2, 45, 0, 45, 53); // Line separating measurement name from measurement value
 	for (int i=0; i<5; i++) {
 		if (i<4) {
-			u8g2_DrawStr(&u8g2, 1, 9 + (i * 11), MeasurementName[(int)MenuSettings[i]]); // MenuSettings stores the index for which measurement it is
-			u8g2_DrawStr(&u8g2, 50, 9 + (i * 11), "{INSERT MEASUREMENT VALUES}"); // Each row is 9 high with 2 space in between
+			u8g2_DrawStr(&u8g2, 1, 9 + (i * 13), MeasurementName[(int)MenuSettings[i]]); // MenuSettings stores the index for which measurement it is
+			u8g2_DrawStr(&u8g2, 50, 9 + (i * 13), "{INSERT MEASUREMENT VALUES}"); // Each row is 9 high with 2 space in between
 		} else {
-			u8g2_DrawStr(&u8g2, 1, 9 + (i * 11), "Settings");
+			u8g2_DrawStr(&u8g2, 1, 9 + (i * 13), "Settings");
 		}
 		if (i == SelectPosition[0]) { // Selection Box
 			u8g2_SetDrawColor(&u8g2, 1);
-			u8g2_DrawBox(&u8g2, 0, (i * 11) - 1, 128, 11);
-			u8g2_SetDrawColor(&u8g2, 0);
+			u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 11);
+			u8g2_SetDrawColor(&u8g2, 2);
 		}
 	}
 }
@@ -322,22 +341,19 @@ void MainScreen() {
 }
 
 void MeasurementSelectDraw() {
-	u8g2_DrawLine(&u8g2, 45, 0, 45, 53); // Line separating measurement name from measurement value
-	for (int i=0; i<5; i++) {
-		if (i<4) {
-			u8g2_DrawStr(&u8g2, 1, 9 + (i * 11), MeasurementName[(int)MenuSettings[i]]);
-			if (i < SelectPosition[0]) { // Shows measurements above select
-				u8g2_DrawStr(&u8g2, 50, 9 + (i * 11), MeasurementName[SelectPosition[1] - (SelectPosition[0] - i)]);
-			} else { // Shows measurements below select
-				u8g2_DrawStr(&u8g2, 50, 9 + (i * 11), MeasurementName[SelectPosition[1] + (i - SelectPosition[0])]);
-			}
-		} else {
-			u8g2_DrawStr(&u8g2, 1, 9 + (i * 11), "Settings");
+	u8g2_DrawLine(&u8g2, 45, 0, 45, 64); // Line separating measurement name from measurement value
+	for (int i=0; i<4; i++) {
+		if (i < SelectPosition[0]) { // Shows measurements above select
+			u8g2_DrawStr(&u8g2, 50, 9 + (i * 13), MeasurementName[SelectPosition[1] - (SelectPosition[0] - i)]);
+		} else { // Shows measurements below select
+			u8g2_DrawStr(&u8g2, 50, 9 + (i * 13), MeasurementName[SelectPosition[1] + (i - SelectPosition[0])]);
 		}
 		if (i == SelectPosition[0]) {  // Selection Box
+			u8g2_DrawStr(&u8g2, 1, 9 + (i * 13), MeasurementName[(int)MenuSettings[i]]);
+			
 			u8g2_SetDrawColor(&u8g2, 1);
-			u8g2_DrawBox(&u8g2, 0, (i * 11) - 1, 128, 11);
-			u8g2_SetDrawColor(&u8g2, 0);
+			u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 11);
+			u8g2_SetDrawColor(&u8g2, 2);
 		}
 	}
 }
@@ -380,19 +396,20 @@ void SettingsDraw() {
 	u8g2_DrawStr(&u8g2, 1, 9, "Backlight:");
 	u8g2_DrawTriangle(&u8g2, 55, 1, 50, 5, 55, 9); // Arrows
 	u8g2_DrawTriangle(&u8g2, 70, 1, 75, 5, 70, 9);
-	char Index[1];
-	sprintf(Index , "%d", BacklightIndexCopy); // Convert BacklightIndexCopy to string
+	
+	char Index[2];
+	sprintf(Index , "%d", BacklightIndexCopy); // Convert int BacklightIndexCopy to string
 	u8g2_DrawStr(&u8g2, 58, 9, Index);
 	
 	u8g2_DrawStr(&u8g2, 1, 20, "Transformer Turns Ratio:");
-	char TurnsRatio[6];
-	sprintf(TurnsRatio , "%f", MenuSettings[5]); // Convert TurnsRatio to string
+	char TurnsRatio[7];
+	sprintf(TurnsRatio , "%.3f", MenuSettings[5]); // Convert float TurnsRatio to string
 	u8g2_DrawStr(&u8g2, 50, 20, TurnsRatio);
 	for (int i=0; i<2; i++) {
 		if (i == SelectPosition[0]) {   // Selection Box
 			u8g2_SetDrawColor(&u8g2, 1);
-			u8g2_DrawBox(&u8g2, 0, (i * 11) - 1, 128, 11);
-			u8g2_SetDrawColor(&u8g2, 0);
+			u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 11);
+			u8g2_SetDrawColor(&u8g2, 2);
 		}
 	}
 }
@@ -463,8 +480,8 @@ void TurnsRatioMenuDraw() {
 	
 	//SettingsDraw(); // Display normal settings screen
 	
-	char TurnsRatio[6];
-	sprintf(TurnsRatio , "%f", TurnsRatioCopy); // Convert TurnsRatioCopy to string
+	char TurnsRatio[7];
+	sprintf(TurnsRatio , "%.3f", TurnsRatioCopy); // Convert TurnsRatioCopy to string
 	u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
 	
 	//u8g2_SetFont(&u8g2, u8g2_font_VCR_OSD_mn); // Change to larger font
@@ -477,7 +494,7 @@ void TurnsRatioMenuDraw() {
 		if (i == SelectPosition[0]) {
 			u8g2_SetDrawColor(&u8g2, 1);
 			u8g2_DrawBox(&u8g2, (i * 5) + DecimalOffset, 60, 5, 11);
-			u8g2_SetDrawColor(&u8g2, 0);
+			u8g2_SetDrawColor(&u8g2, 2);
 		}
 	}
 }
@@ -498,8 +515,8 @@ void TurnsRatioMenu(){
 		} else if ((PINB & (1<<6))) { // Up
 			ButtonTurn = 0;
 			
-			char TurnsRatio[6];
-			sprintf(TurnsRatio , "%f", TurnsRatioCopy); // Convert TurnsRatioCopy to string
+			char TurnsRatio[7];
+			sprintf(TurnsRatio , "%.3f", TurnsRatioCopy); // Convert TurnsRatioCopy to string
 			u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
 			
 			if ((TurnsRatio[SelectPosition[1]] - '0') == 9) { // Check specific digit
@@ -512,8 +529,8 @@ void TurnsRatioMenu(){
 		} else if ((PINB & (1<<7))) { // Down
 			ButtonTurn = 0;
 			
-			char TurnsRatio[6];
-			sprintf(TurnsRatio , "%f", TurnsRatioCopy); // Convert TurnsRatioCopy to string
+			char TurnsRatio[7];
+			sprintf(TurnsRatio , "%.3f", TurnsRatioCopy); // Convert TurnsRatioCopy to string
 			u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
 			
 			if ((TurnsRatio[SelectPosition[1]] - '0') == 0) {  // Check specific digit
