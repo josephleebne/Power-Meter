@@ -7,12 +7,17 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <avr/io.h>
 
 /*
  * 
  */
-int main(int argc, char** argv) {
-
+int main(void) {
+    DDRB = 0x01; //PB0 to output
+    DDRB = 0x01; //PB0 to high
+    
+    while (1) {
+    }
     return (EXIT_SUCCESS);
 }
 

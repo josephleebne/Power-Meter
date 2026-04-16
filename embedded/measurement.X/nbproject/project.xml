@@ -3,14 +3,12 @@
     <type>com.microchip.mplab.nbide.embedded.makeproject</type>
     <configuration>
         <data xmlns="http://www.netbeans.org/ns/make-project/1">
-            <name>ENGG2800</name>
-            <creation-uuid>6bef9e8d-3c8c-4644-8d8d-7972830208e3</creation-uuid>
+            <name>measurement</name>
+            <creation-uuid>96ce41ea-a06d-418f-970b-6b03f3c3c165</creation-uuid>
             <make-project-type>0</make-project-type>
             <sourceEncoding>ISO-8859-1</sourceEncoding>
             <make-dep-projects/>
-            <sourceRootList>
-                <sourceRootElem>lcd</sourceRootElem>
-            </sourceRootList>
+            <sourceRootList/>
             <confList>
                 <confElem>
                     <name>default</name>

@@ -24,7 +24,7 @@ CLEAN_SUBPROJECTS=${CLEAN_SUBPROJECTS_${SUBPROJECTS}}
 
 
 # Project Name
-PROJECTNAME=Talking to gui.X
+PROJECTNAME=measurement.X
 
 # Active Configuration
 DEFAULTCONF=default
