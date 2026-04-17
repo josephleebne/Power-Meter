@@ -28,7 +28,7 @@
         <targetDevice>ATmega328P</targetDevice>
         <targetHeader></targetHeader>
         <targetPluginBoard></targetPluginBoard>
-        <platformTool>noID</platformTool>
+        <platformTool>snap</platformTool>
         <languageToolchain>AVR</languageToolchain>
         <languageToolchainVersion>15.1.0</languageToolchainVersion>
         <platform>4</platform>
