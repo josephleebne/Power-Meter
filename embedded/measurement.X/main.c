@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <avr/io.h>
 #include <math.h> //ASK!!!!!!
+#include <avr/interrupt.h>
 
 //UART Communication
 #define F_CPU 8000000UL
@@ -15,6 +16,12 @@
 #define DISCARD_FIRST_SAMPLE 1
 #define AC_VOLTAGE_RATIO (680.0/3300.0)
 #define NO_MEASUREMENTS 2
+#define NO_CHANNELS 2
+
+//GLOBAL VARIABLES
+volatile uint16_t ADCReading[NO_CHANNELS];
+volatile uint8_t areReadingsReady = 0;
+volatile uint8_t ADCCurrentChannel = 0;
 
 void UART_init(void) {
     UBRR0H = (unsigned char)(UBRR_VALUE >> 8);
@@ -25,6 +32,7 @@ void UART_init(void) {
 }
 
 void UART_transmit(char data) {
+    //THIS IS BLOCKING
     while (!(UCSR0A & (1 << UDRE0))) {
     }
     UDR0 = data;
@@ -59,14 +67,31 @@ void UART_print_float_2dp(float value) {
 
 void setup_ADC(void) {
     ADMUX = (0 << REFS1) | (0 << REFS0) | (0 << ADLAR); // AREF, 10 bit results
-    ADCSRA = (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0) | (1 << ADEN);
+    ADCSRA = (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0) | (1 << ADEN) | (1 << ADIE);
 }
 
-uint16_t read_ADC(void) {
+void ADC_start_conversion(void) {
     ADCSRA |= (1 << ADSC);
-    while (ADCSRA & (1 << ADSC)) {
+}
+
+void ADC_select_channel(uint8_t channel) {
+    channel &= 0x0F; //Look at lowest 4 bits
+    ADMUX &= ~((1 << MUX3) | (1 << MUX2) | (1 << MUX1) | (1 << MUX0)); //Clear channel
+    ADMUX |= channel;
+}
+
+ISR(ADC_vect) {
+    //Save ADC reading to array
+    ADCReading[ADCCurrentChannel] = ADC;
+    ADCCurrentChannel++;
+    //Wrap back around to channel 0 if we've done all 5 measurements
+    if (ADCCurrentChannel >= NO_CHANNELS){
+        ADCCurrentChannel = 0;
+        areReadingsReady = 1;
     }
-    return ADC;
+
+    ADC_select_channel(ADCCurrentChannel);
+    ADC_start_conversion();
 }
 
 float calculate_DC_voltage(uint16_t ADCreading) {
@@ -93,12 +118,6 @@ float calculate_DC_current(uint16_t ADCreading) {
     return Vin;
 }
 
-void ADC_select_channel(uint8_t channel) {
-    channel &= 0x0F; //Look at lowest 4 bits
-    ADMUX &= ~((1 << MUX3) | (1 << MUX2) | (1 << MUX1) | (1 << MUX0)); //Clear channel
-    ADMUX |= channel;
-}
-
 void UART_print_measurements(float arr[NO_MEASUREMENTS]) {
     UART_print("[");
     UART_print_float_2dp(arr[0]);
@@ -110,39 +129,41 @@ void UART_print_measurements(float arr[NO_MEASUREMENTS]) {
 int main(void) {
     UART_init();
     setup_ADC();
+    ADC_select_channel(0);
+    sei();
+    ADC_start_conversion();
 
     float measurements[NO_MEASUREMENTS];
-    uint16_t voltageReadingDC, currentReadingDC;
+    uint16_t localADC[NO_CHANNELS];
 
     while (1) {
-        //DC Voltage reading
-        ADC_select_channel(0);
-        read_ADC();//Throw away first reading
-        voltageReadingDC = read_ADC();
-        measurements[0] = calculate_DC_voltage(voltageReadingDC);
+        if (areReadingsReady) {
+            //Briefly disable interrupts for safety
+            cli();
+            localADC[0] = ADCReading[0];
+            localADC[1] = ADCReading[1];
+            areReadingsReady = 0;
+            sei();
+            
+            //Save measurements
+            measurements[0] = calculate_DC_voltage(localADC[0]);
+            measurements[1] = calculate_DC_current(localADC[1]);
 
-        //DC Current reading
-        ADC_select_channel(1);
-        read_ADC();
-        currentReadingDC = read_ADC();
-        measurements[1] = calculate_DC_current(currentReadingDC);
+            //Print measurements out
+            UART_print("Voltage ADC = ");
+            UART_print_uint(localADC[0]);
+            UART_print("  Voltage = ");
+            UART_print_float_2dp(measurements[0]);
+            UART_print(" V   ");
 
-        //Printings
-        UART_print("Voltage ADC = ");
-        UART_print_uint(voltageReadingDC);
-        UART_print("  Voltage = ");
-        UART_print_float_2dp(measurements[0]);
-        UART_print(" V   ");
+            UART_print("Current ADC = ");
+            UART_print_uint(localADC[1]);
+            UART_print("  Current = ");
+            UART_print_float_2dp(measurements[1]);
+            UART_print(" A\r\n");
 
-        UART_print("Current ADC = ");
-        UART_print_uint(currentReadingDC);
-        UART_print("  Current = ");
-        UART_print_float_2dp(measurements[1]);
-        UART_print(" A\r\n");
-
-        UART_print_measurements(measurements);
-
-
+            UART_print_measurements(measurements);
+        }
     }
 
     return 0;
