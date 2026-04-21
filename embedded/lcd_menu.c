@@ -61,6 +61,8 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 #include <math.h>
 #include <stdio.h>
 #include <avr/power.h>
+#include <time.h>
+#include <avr/interrupt.h>
 
 #define DISPLAY_CLK_DIR DDRB
 #define DISPLAY_CLK_PORT PORTB
@@ -125,6 +127,7 @@ int ButtonTurn = 1; // Button turn baton
 int Backlight[] = {0, 64, 128, 192, 255}; // Values for OCR0B for Backlight
 int BacklightIndexCopy; // Copy of Backlight Index
 float TurnsRatioCopy; // Copy of Transformer Turns Ratio
+int lcdtick = 0;
 
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr) {
 	uint8_t cycles;
@@ -210,7 +213,7 @@ uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void
 				DISPLAY_RESET_PORT &= ~(1<<DISPLAY_RESET_PIN);
 			break;
 		default:
-			if (u8x8_avr_delay(u8x8, msg, arg_int, arg_ptr))	// check for any delay msgs
+			if (u8x8_avr_delay(u8x8, U8X8_MSG_DELAY_NANO, arg_int, arg_ptr))	// check for any delay msgs
 				return 1;
 			u8x8_SetGPIOResult(u8x8, 1);      // default return value
 			break;
@@ -218,21 +221,23 @@ uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void
 	return 1;
 }
 
-int main(void)
-{
+// Define An Interrupt Handler for TIMER1_COMPA Interrupt (Nesting Disabled)
+ISR(TIMER1_COMPA_vect, ISR_BLOCK) {
+    lcdtick = 1;     // signal "tick" event
+}
+
+int main(void) {
     lcd_init();
     init();
     
-	/* full buffer example, setup procedure ends in _f */
-	u8g2_ClearBuffer(&u8g2);
-    u8g2_SetDrawColor(&u8g2, 1);
-    u8g2_DrawBox(&u8g2, 0, 40, 128, 7);
-	u8g2_DrawStr(&u8g2, 1, 18, "U8g2 uduy AVR");
-	u8g2_SendBuffer(&u8g2);
+    //clock_t Start = time(0);
+    //float Delay = 0;
 	
 	while(1){
-        u8g2_ClearBuffer(&u8g2);
-		DrawTime();
+        if (lcdtick) {
+            u8g2_ClearBuffer(&u8g2);
+        }
+        //u8g2_ClearBuffer(&u8g2);
 		if (!Menu) { // The different menu screens.
 			MainScreen();
 		} else if (Menu == 1) {
@@ -245,7 +250,16 @@ int main(void)
 		if (PIND & (1<<2)) {
 			DrawPCIcon();
 		}
-        u8g2_SendBuffer(&u8g2);
+		DrawTime();
+        if (lcdtick) {
+            u8g2_SendBuffer(&u8g2);
+            lcdtick = 0;
+        }
+        //if (time(0) > (Start + Delay)) {
+            //u8g2_SendBuffer(&u8g2);
+            //Start = time(0);
+        //}
+        //u8g2_SendBuffer(&u8g2);
 	}
 }
 
@@ -280,6 +294,15 @@ void init(){
 	TCCR0A |= (1 << WGM01) | (1 << WGM00) | (1 << COM0B1); // set fast PWM Mode and non-inverting mode
 	TCCR0B |= (1 << CS01);  // set prescaler to 8
     
+    // Set up Timer/Counter1
+    TCCR1B |= (1 << WGM12);   // Configure timer 1 for CTC mode
+    OCR1A = (uint16_t)(125000 / 4);     // Set CTC compare value to 10Hz (100mS) at 8MHz AVR clock , with a prescaler of 64
+    TIMSK1 |= (1 << OCIE1A);  // Enable CTC interrupt
+    TCCR1B |= ((1 << CS10) | (1 << CS11)); // Start Timer/Counter1 at F_CPU/64 
+
+    // Enable global interrupts 
+    sei();
+    
     if ((eeprom_read_word((uint16_t)MEASUREMENT_1_ADDRESS) < 1) || (eeprom_read_word((uint16_t*) MEASUREMENT_1_ADDRESS) > 13)) { // If the value at the 1st measurement address is within this range, then it is safe to say that values are stored in the addresses for all the menu settings.
 		for (int i = 0; i < 6; i++){ // Write initial values to menu setting addresses
 			if (i == 4) {
@@ -298,8 +321,6 @@ void init(){
 }
 
 void DrawPCIcon() {
-    u8g2_SetDrawColor(&u8g2, 1);
-    u8g2_DrawBox(&u8g2, 120, 58, 7, 6);
     u8g2_SetDrawColor(&u8g2, 2);
 	u8g2_DrawFrame(&u8g2, 121, 59, 5, 3);
 	u8g2_DrawBox(&u8g2, 122, 62, 3, 1);
@@ -307,15 +328,24 @@ void DrawPCIcon() {
 
 void DrawTime() {
     u8g2_SetFont(&u8g2, u8g2_font_u8glib_4_hr); // Change to smaller font
+    u8g2_SetDrawColor(&u8g2, 2);
+    char Index[2];
+	sprintf(Index , "%d", lcdtick);
+	u8g2_DrawStr(&u8g2, 55, 57, Index);
 	u8g2_DrawStr(&u8g2, 60, 57, "{INSERT DATETIME}");
     u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr);
 }
 
 void MainScreenDraw() {
-	u8g2_DrawLine(&u8g2, 44, 1, 44, 48); // Line separating measurement name from measurement value
 	for (int i=0; i<5; i++) {
         if (i == SelectPosition[0]) { // Selection Box
-			u8g2_DrawBox(&u8g2, 0, (i * 13), 128, 11);
+            u8g2_SetDrawColor(&u8g2, 1);
+            u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
+            u8g2_SetDrawColor(&u8g2, 0);
+        } else {
+            u8g2_SetDrawColor(&u8g2, 0);
+            u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
+            u8g2_SetDrawColor(&u8g2, 1);
         }
 		if (i<4) {
 			u8g2_DrawStr(&u8g2, 1, 10 + (i * 13), MeasurementName[(int)MenuSettings[i]]); // MenuSettings stores the index for which measurement it is
@@ -324,13 +354,17 @@ void MainScreenDraw() {
 			u8g2_DrawStr(&u8g2, 1, 61, "Settings");
 		}
 	}
+    u8g2_SetDrawColor(&u8g2, 2);
+    u8g2_DrawLine(&u8g2, 44, 1, 44, 48); // Line separating measurement name from measurement value
 }
 
 void MainScreen() {
 	MainScreenDraw(); // Refreshes display constantly to display changing values.
 	if (ButtonTurn) { // Attempts to prevent pressing of multiple buttons.
-		if ((PINB & (1<<1)) || (PIND & (1<<6))) { // Enter and right
+		if (ENTER || RIGHT) { // Enter and right
 			ButtonTurn = 0;
+            u8g2_SetDrawColor(&u8g2, 0);
+            u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
 			if (SelectPosition[0]<4) {
 				Menu = 1; // Measurement select menu
 				// SelectPosition[1] = (int)eeprom_read_word((uint16_t*)MenuSettingsEEPROMAddresses[SelectPosition[0]]); // Set position at the index of the measurement for Measurement select screen.
@@ -343,14 +377,19 @@ void MainScreen() {
                 SettingsDraw();
 			}
 			ButtonTurn = 1;
-		} else if ((PINB & (1<<6))) { // Up
+		} else if (UP) { // Up
 			ButtonTurn = 0;
 			SelectPosition[0]--;
 			if (SelectPosition[0]<0) {
 				SelectPosition[0] = 4;
 			}
 			ButtonTurn = 1;
-		} else if ((PINB & (1<<7))) { // Down
+		} else if (DOWN) { // Down
+            if (OCR0B == 0) {
+                OCR0B = Backlight[(int)MenuSettings[4]]; // Set Backlight
+            } else {
+                OCR0B = 0; // Set Backlight
+            }
 			ButtonTurn = 0;
 			SelectPosition[0]++;
 			if (SelectPosition[0]>4) {
@@ -379,17 +418,17 @@ void MeasurementSelectDraw() {
 void MeasurementSelect(){
     MeasurementSelectDraw();
 	if (ButtonTurn){
-		if ((PINB & (1<<1)) || (PINB & (1<<7))) { // Enter and left
+		if (ENTER || LEFT) { // Enter and left
 			ButtonTurn = 0;
 			MenuSettings[SelectPosition[0]] = SelectPosition[1]; // Confirm measurement selection
 			eeprom_write_word((uint16_t*)MenuSettingsEEPROMAddresses[SelectPosition[0]], SelectPosition[1] + 1); // Update in EEPROM
 			Menu--;
 			ButtonTurn = 1;
-		} else if (PINB & (1<<4)) { // Back
+		} else if (BACK) { // Back
 			ButtonTurn = 0;
 			Menu--;
 			ButtonTurn = 1;
-		} else if (PINB & (1<<6)) { // Up
+		} else if (UP) { // Up
 			ButtonTurn = 0;
 			SelectPosition[1]--;
 			if (SelectPosition[1]<0) {
@@ -397,7 +436,7 @@ void MeasurementSelect(){
 			}
 			MeasurementSelectDraw();
 			ButtonTurn = 1;
-		} else if (PINB & (1<<7)) { // Down
+		} else if (DOWN) { // Down
 			ButtonTurn = 0;
 			SelectPosition[1]++;
 			if (SelectPosition[1]>12) {
