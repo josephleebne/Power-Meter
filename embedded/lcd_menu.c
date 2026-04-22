@@ -457,21 +457,28 @@ void MeasurementSelect(){
 
 void SettingsDraw() {
 	//u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr); // Reset font after returning from TurnsRatioMenuDraw
-	u8g2_DrawStr(&u8g2, 1, 10, "Backlight:");
-	u8g2_DrawTriangle(&u8g2, 60, 1, 53, 5, 60, 9); // Arrows
-	u8g2_DrawTriangle(&u8g2, 70, 1, 77, 5, 70, 9);
-	
-	char Index[2];
-	sprintf(Index , "%d", BacklightIndexCopy); // Convert int BacklightIndexCopy to string
-	u8g2_DrawStr(&u8g2, 63, 10, Index);
-	
-	u8g2_DrawStr(&u8g2, 1, 24, "Turns Ratio:");
-	char TurnsRatio[7];
-	sprintf(TurnsRatio , "%.3f", MenuSettings[5]); // Convert float TurnsRatio to string
-	u8g2_DrawStr(&u8g2, 70, 24, TurnsRatio);
 	for (int i=0; i<2; i++) {
-		if (i == SelectPosition[1]) {   // Selection Box
-			u8g2_DrawBox(&u8g2, 0, (i * 13) + (2 - i), 128, 11);
+		if (i == SelectPosition[0]) { // Selection Box
+			u8g2_SetDrawColor(&u8g2, 1);
+			u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
+			u8g2_SetDrawColor(&u8g2, 0);
+		} else {
+			u8g2_SetDrawColor(&u8g2, 0);
+			u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
+			u8g2_SetDrawColor(&u8g2, 1);
+		}
+		if (i == 0) {
+			u8g2_DrawStr(&u8g2, 1, 10, "Backlight:");
+			u8g2_DrawTriangle(&u8g2, 60, 1, 53, 5, 60, 9); // Arrows
+			u8g2_DrawTriangle(&u8g2, 70, 1, 77, 5, 70, 9);
+			char Index[2];
+			sprintf(Index , "%d", BacklightIndexCopy); // Convert int BacklightIndexCopy to string
+			u8g2_DrawStr(&u8g2, 63, 10, Index);
+		} else {
+			u8g2_DrawStr(&u8g2, 1, 24, "Turns Ratio:");
+			char TurnsRatio[7];
+			sprintf(TurnsRatio , "%.3f", (float)MenuSettings[5]); // Convert float TurnsRatio to string
+			u8g2_DrawStr(&u8g2, 70, 24, TurnsRatio);
 		}
 	}
 }
