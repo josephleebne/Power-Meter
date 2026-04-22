@@ -306,14 +306,14 @@ void init(){
     if ((eeprom_read_word((uint16_t)MEASUREMENT_1_ADDRESS) < 1) || (eeprom_read_word((uint16_t*) MEASUREMENT_1_ADDRESS) > 13)) { // If the value at the 1st measurement address is within this range, then it is safe to say that values are stored in the addresses for all the menu settings.
 		for (int i = 0; i < 6; i++){ // Write initial values to menu setting addresses
 			if (i == 4) {
-				eeprom_write_word((uint16_t*)MenuSettingsEEPROMAddresses[i], 4); // Initial Backlight value. 4 is 100% Backlight.
+				eeprom_update_float((float*)MenuSettingsEEPROMAddresses[i], 4); // Initial Backlight value. 4 is 100% Backlight.
 			} else {
-				eeprom_write_word((uint16_t*)MenuSettingsEEPROMAddresses[i], 1);
+				eeprom_update_float((float*)MenuSettingsEEPROMAddresses[i], 1);
 			}
 		}
     } else {
 		for (int i = 0; i < 6; i++){
-			MenuSettings[0] = eeprom_read_word ((uint16_t*)MenuSettingsEEPROMAddresses[i]); // Read values from addresses if values are already stored there.
+			MenuSettings[0] = eeprom_read_float ((float*)MenuSettingsEEPROMAddresses[i]); // Read values from addresses if values are already stored there.
 		}
     }
 	
@@ -401,18 +401,25 @@ void MainScreen() {
 }
 
 void MeasurementSelectDraw() {
-	u8g2_DrawLine(&u8g2, 44, 1, 44, 63); // Line separating measurement name from measurement value
 	for (int i=0; i<4; i++) {
+		if (i == SelectPosition[0]) { // Selection Box
+			u8g2_SetDrawColor(&u8g2, 1);
+			u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
+			u8g2_SetDrawColor(&u8g2, 0);
+			u8g2_DrawStr(&u8g2, 1, 10 + (i * 13), MeasurementName[(int)MenuSettings[i]]);
+		} else {
+			u8g2_SetDrawColor(&u8g2, 0);
+			u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
+			u8g2_SetDrawColor(&u8g2, 1);
+		}
 		if (i < SelectPosition[0]) { // Shows measurements above select
 			u8g2_DrawStr(&u8g2, 50, 10 + (i * 13), MeasurementName[SelectPosition[1] - (SelectPosition[0] - i)]);
 		} else { // Shows measurements below select
 			u8g2_DrawStr(&u8g2, 50, 10 + (i * 13), MeasurementName[SelectPosition[1] + (i - SelectPosition[0])]);
 		}
-		if (i == SelectPosition[0]) {  // Selection Box
-			u8g2_DrawStr(&u8g2, 1, 10 + (i * 13), MeasurementName[(int)MenuSettings[i]]);
-			u8g2_DrawBox(&u8g2, 0, (i * 13), 128, 11);
-		}
 	}
+	u8g2_SetDrawColor(&u8g2, 2);
+	u8g2_DrawLine(&u8g2, 44, 1, 44, 48); // Line separating measurement name from measurement value
 }
 
 void MeasurementSelect(){
@@ -421,7 +428,7 @@ void MeasurementSelect(){
 		if (ENTER || LEFT) { // Enter and left
 			ButtonTurn = 0;
 			MenuSettings[SelectPosition[0]] = SelectPosition[1]; // Confirm measurement selection
-			eeprom_write_word((uint16_t*)MenuSettingsEEPROMAddresses[SelectPosition[0]], SelectPosition[1] + 1); // Update in EEPROM
+			eeprom_update_float((float*)MenuSettingsEEPROMAddresses[SelectPosition[0]], SelectPosition[1] + 1); // Update in EEPROM
 			Menu--;
 			ButtonTurn = 1;
 		} else if (BACK) { // Back
@@ -485,7 +492,7 @@ void Settings() {
 				Menu--;
 				MenuSettings[4] = BacklightIndexCopy;
 				OCR0B = Backlight[(int)MenuSettings[4]];
-				eeprom_write_word((uint16_t*)MenuSettingsEEPROMAddresses[4], MenuSettings[4]);
+				eeprom_update_float((float*)MenuSettingsEEPROMAddresses[4], MenuSettings[4]);
 				ButtonTurn = 1;
 			}
 		} else if ((PINB & (1<<4))) { // Back. Exit settings without saving backlight setting changes
@@ -562,7 +569,7 @@ void TurnsRatioMenu(){
 		if ((PINB & (1<<1))) { // Enter. Confirm New Turn Ratio
 			ButtonTurn = 0;
 			MenuSettings[5] = TurnsRatioCopy; 
-			eeprom_write_word((uint16_t*)MenuSettingsEEPROMAddresses[5], TurnsRatioCopy);
+			eeprom_update_float((float*)MenuSettingsEEPROMAddresses[5], TurnsRatioCopy);
 			Menu--;
 			ButtonTurn = 1;
             SettingsDraw();
