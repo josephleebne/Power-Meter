@@ -13,7 +13,7 @@
 //MEASUREMENTS: for measurements read from the channels, and measurements calculated from those
 #define VREF 5.0f
 #define NUM_SAMPLES 100
-#define NO_MEASUREMENTS 12
+#define NO_MEASUREMENTS 16
 #define MEAS_DC_VOLTAGE              0
 #define MEAS_DC_CURRENT              1
 #define MEAS_AC_VOLTAGE              2
@@ -371,7 +371,7 @@ int main(void) {
 
             //print full measurement array for communication to gui
             UART_print_measurements(measurements);
-            //Format is [DC Voltage, DC Current, AC Voltage RMS, AC Current (high current mode) RMS, AC Current (low current mode) RMS, AC Voltage Vpp, AC Current (high current mode) Vpp, AC Current (low current mode) Vpp, phase difference, power factor, frequency, real power, reactive power, apparant power, RTC time]
+            //ARRAY FORMAT IS: [DC Voltage, DC Current, AC Voltage RMS, AC Current (high current mode) RMS, AC Current (low current mode) RMS, AC Voltage Vpp, AC Current (high current mode) Vpp, AC Current (low current mode) Vpp, phase difference, power factor, frequency, DC power, AC real power, AC reactive power, AC apparant power, RTC time]
         }
     }
 
