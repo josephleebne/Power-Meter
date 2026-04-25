@@ -28,7 +28,7 @@
 #define MEAS_TIME                    11
 
 //CHANNELS: the actual readings from the circuit
-#define NO_CHANNELS 2
+#define NO_CHANNELS 4
 #define DC_VOLTAGE_CHANNEL 0
 #define DC_CURRENT_CHANNEL 1
 #define AC_VOLTAGE_CHANNEL 2
@@ -40,24 +40,22 @@
         //FOR AC VOLTAGE
 volatile uint32_t acVoltageSum = 0;
 volatile uint32_t acVoltageSumSq = 0;
-volatile uint16_t acVoltageCount = 0;
 volatile uint16_t acVoltageMin = 1023;
 volatile uint16_t acVoltageMax = 0;
 
         //FOR AC CURRENT - HIGH
 volatile uint32_t acCurrentHighSum = 0;
 volatile uint32_t acCurrentHighSumSq = 0;
-volatile uint16_t acCurrentHighCount = 0;
 volatile uint16_t acCurrentHighMin = 1023;
 volatile uint16_t acCurrentHighMax = 0;
 
         //FOR AC CURRENT - LOW
 volatile uint32_t acCurrentLowSum = 0;
 volatile uint32_t acCurrentLowSumSq = 0;
-volatile uint16_t acCurrentLowCount = 0;
 volatile uint16_t acCurrentLowMin = 1023;
 volatile uint16_t acCurrentLowMax = 0;
 
+volatile uint16_t acSampleCount = 0;
 volatile uint8_t acWindowReady = 0;
 
     //STORED VARIABLES FOR ADC READING
@@ -121,7 +119,6 @@ void ADC_start_conversion(void) {
 }
 
 //Takes in a number from 0 to 4, corresponding to an ADC Channel
-//0 -> DC Voltage, 1-> DC Current, 2-> AC Voltage, 3->AC Current (Low Resolution), 4->AC Current (High Resolution)
 void ADC_select_channel(uint8_t channel) {
     channel &= 0x0F; //Look at lowest 4 bits
     ADMUX &= ~((1 << MUX3) | (1 << MUX2) | (1 << MUX1) | (1 << MUX0)); //Clear channel
@@ -131,6 +128,10 @@ void ADC_select_channel(uint8_t channel) {
 
 //Save the ADC reading, switch channels, and start another conversion
 ISR(ADC_vect) {
+
+    uint16_t channel = ADCSelectedChannel;
+    uint16_t reading = ADC;
+
     if (discardNextSample) {
         //Discard the first sample after switching channels
         discardNextSample = 0;
@@ -139,15 +140,43 @@ ISR(ADC_vect) {
     }
 
     //Save ADC reading to array
-    ADCReading[ADCSelectedChannel] = ADC;
+    ADCReading[channel] = reading;
+
+    //AC Voltage measurement
+    if (channel == AC_VOLTAGE_CHANNEL && !acWindowReady) {
+        //For RMS measurement
+        acVoltageSum += reading;
+        acVoltageSumSq += (uint32_t)reading * (uint32_t)reading;
+
+        //For pk measurement, will probably remove later
+        if (reading < acVoltageMin) acVoltageMin = reading;
+        if (reading > acVoltageMax) acVoltageMax = reading;
+    }
+        //AC Current (High) measurement
+    if (channel == AC_CURRENT_HIGH_CHANNEL && !acWindowReady) {
+        //For RMS measurement
+        acCurrentHighSum += reading;
+        acCurrentHighSumSq += (uint32_t)reading * (uint32_t)reading;
+
+        //For pk measurement, will probably remove later
+        if (reading < acCurrentHighMin) acCurrentHighMin = reading;
+        if (reading > acCurrentHighMax) acCurrentHighMax = reading;
+        
+        acSampleCount++;
+        if (acSampleCount >= NUM_SAMPLES) {
+            acWindowReady = 1;
+        }
+    }
+
+    //Change channel, and wrap back around to channel 0 if we've done all 5
     ADCSelectedChannel++;
-    //Wrap back around to channel 0 if we've done all 5 measurements
     if (ADCSelectedChannel >= NO_CHANNELS){
         ADCSelectedChannel = 0;
         areReadingsReady = 1;
     }
 
     ADC_select_channel(ADCSelectedChannel);
+    discardNextSample = 1;
     ADC_start_conversion();
 }
 
@@ -179,10 +208,48 @@ float calculate_DC_current(uint16_t ADCreading) {
     return Vin;
 }
 
-float calculate_AC_voltage(uint16_t ADCreading){
-    //haven't implemented yet
-    //but the plan is to use the rms formula
-    return 4.2f;
+float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count) {
+    if (count == 0) { //Prevent 0 division
+        return 0.0f;
+    }
+
+    float mean = (float)sum / (float)count;
+    float meanSq = (float)sumSq / (float)count;
+
+    float variance = meanSq - (mean * mean);
+
+    //Prevent negative square roots due to rounding
+    if (variance < 0.0f) {
+        variance = 0.0f;
+    }
+
+    return sqrtf(variance);
+}
+
+float ADC_counts_to_volts(float ADCCounts) {
+    return ADCCounts * VREF / 1023.0f;
+}
+
+float calculate_AC_voltage_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
+    float scalingRatio = (1.4f / 14.14f);
+    float errorRatio = 1.0f;
+
+    float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
+    float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
+
+    return (ADCRMSVoltage / scalingRatio) * errorRatio;
+}
+
+float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
+    float scalingRatio = 1.0f;
+    float currentToVoltageRatio = 10.0f;
+    float errorRatio = 1.0f;
+
+    float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
+    float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
+    float currentRMS = (ADCRMSVoltage / scalingRatio) * currentToVoltageRatio;
+
+    return currentRMS * errorRatio;
 }
 
 void UART_print_measurements(float arr[NO_MEASUREMENTS]) {
@@ -209,46 +276,103 @@ int main(void) {
     ADC_start_conversion();
 
     float measurements[NO_MEASUREMENTS];
-    uint16_t localADC[NO_CHANNELS];
+    uint16_t localDCVoltageADC;
+    uint16_t localDCCurrentADC;
+
+    //Fill all measurements with placeholders
+    for (uint8_t i = 0; i < NO_MEASUREMENTS; i++) {
+        measurements[i] = 4.2f;
+    } //Only code for DC/AC voltage and Current have been implemented!!
 
     while (1) {
+        if (acWindowReady){
+            //Disable interrupts while copying over ADC readings for safety
+            uint32_t localACVoltageSum;
+            uint32_t localACVoltageSumSq;
+
+            uint32_t localACCurrentHighSum;
+            uint32_t localACCurrentHighSumSq;
+
+            uint16_t localACSampleCount;
+
+            cli();
+
+            localACVoltageSum = acVoltageSum;
+            localACVoltageSumSq = acVoltageSumSq;
+
+            localACCurrentHighSum = acCurrentHighSum;
+            localACCurrentHighSumSq = acCurrentHighSumSq;
+
+            localACSampleCount = acSampleCount;
+
+            //Reset for next group of samples
+            acVoltageSum = 0;
+            acVoltageSumSq = 0;
+            acVoltageMin = 1023;
+            acVoltageMax = 0;
+
+            acCurrentHighSum = 0;
+            acCurrentHighSumSq = 0;
+            acCurrentHighMin = 1023;
+            acCurrentHighMax = 0;
+
+            acSampleCount = 0;
+            acWindowReady = 0;
+
+            sei();
+
+            //Save AC measurements
+            measurements[MEAS_AC_VOLTAGE] =
+                calculate_AC_voltage_RMS(localACVoltageSum,
+                                         localACVoltageSumSq,
+                                         localACSampleCount);
+
+            measurements[MEAS_AC_CURRENT_HIGH] =
+                calculate_AC_current_high_RMS(localACCurrentHighSum,
+                                              localACCurrentHighSumSq,
+                                              localACSampleCount);
+        }
+
         if (areReadingsReady) {
             //Disable interrupts while copying over ADC readings for safety
             cli();
 
-            localADC[DC_VOLTAGE_CHANNEL] = ADCReading[DC_VOLTAGE_CHANNEL];
-            localADC[DC_CURRENT_CHANNEL] = ADCReading[DC_CURRENT_CHANNEL];
+            localDCVoltageADC = ADCReading[DC_VOLTAGE_CHANNEL];
+            localDCCurrentADC = ADCReading[DC_CURRENT_CHANNEL];
 
             areReadingsReady = 0;
             sei();
 
-            //Fill all measurements with placeholders
-            for (uint8_t i = 0; i < NO_MEASUREMENTS; i++) {
-                measurements[i] = 4.2f;
-            } //NOTE: Only code for DC voltage and DC Current have been implemented!!
+            //Save DC measurements
+            measurements[MEAS_DC_VOLTAGE] = calculate_DC_voltage(localDCVoltageADC);
 
-            //Save implemented measurements
-            measurements[MEAS_DC_VOLTAGE] =
-                calculate_DC_voltage(localADC[DC_VOLTAGE_CHANNEL]);
-
-            measurements[MEAS_DC_CURRENT] =
-                calculate_DC_current(localADC[DC_CURRENT_CHANNEL]);
+            measurements[MEAS_DC_CURRENT] = calculate_DC_current(localDCCurrentADC);
 
             //Print debug output (for me)
-            UART_print("Voltage ADC = ");
-            UART_print_uint(localADC[DC_VOLTAGE_CHANNEL]);
+            UART_print("DC Voltage ADC = ");
+            UART_print_uint(localDCVoltageADC);
             UART_print("  Voltage = ");
             UART_print_float_2dp(measurements[MEAS_DC_VOLTAGE]);
             UART_print(" V   ");
 
-            UART_print("Current ADC = ");
-            UART_print_uint(localADC[DC_CURRENT_CHANNEL]);
+            UART_print("DC Current ADC = ");
+            UART_print_uint(localDCCurrentADC);
             UART_print("  Current = ");
             UART_print_float_2dp(measurements[MEAS_DC_CURRENT]);
             UART_print(" A\r\n");
 
+            UART_print("AC Voltage RMS = ");
+            UART_print_float_2dp(measurements[MEAS_AC_VOLTAGE]);
+            UART_print(" V\r\n");
+
+            UART_print("AC Current (High) RMS = ");
+            UART_print_float_2dp(measurements[MEAS_AC_CURRENT_HIGH]);
+            UART_print(" A\r\n");
+
             //print full measurement array for communication to gui
             UART_print_measurements(measurements);
+            //Format is [DC Voltage, DC Current, AC Voltage, AC Current (high current mode), AC Current (low current mode), 
+            //phase, power factor, frequency, real power, reactive power, apparant power, RTC time]
         }
     }
 
