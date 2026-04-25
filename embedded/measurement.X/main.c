@@ -371,8 +371,7 @@ int main(void) {
 
             //print full measurement array for communication to gui
             UART_print_measurements(measurements);
-            //Format is [DC Voltage, DC Current, AC Voltage, AC Current (high current mode), AC Current (low current mode), 
-            //phase, power factor, frequency, real power, reactive power, apparant power, RTC time]
+            //Format is [DC Voltage, DC Current, AC Voltage RMS, AC Current (high current mode) RMS, AC Current (low current mode) RMS, AC Voltage Vpp, AC Current (high current mode) Vpp, AC Current (low current mode) Vpp, phase difference, power factor, frequency, real power, reactive power, apparant power, RTC time]
         }
     }
 
