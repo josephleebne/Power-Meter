@@ -120,14 +120,14 @@ void DrawScreen();
 u8g2_t u8g2;
 float MenuSettings[] = {0, 0, 0, 0, 4, 1}; // Measurement 1, Measurement 2, Measurement 3, Measurement 4, BacklightIndex, TurnsRatio
 int MenuSettingsEEPROMAddresses[] = {MEASUREMENT_1_ADDRESS, MEASUREMENT_2_ADDRESS, MEASUREMENT_3_ADDRESS, MEASUREMENT_4_ADDRESS, BACKLIGHT_ADDRESS, TURNS_RATIO_ADDRESS};
-char* MeasurementName[13] = {"DCV (V)","DCC (A)","DCP (W)","ACV (V)","ACC (A)","ACF (Hz)","ACPD (°)","ACP (W)","ACRP (VAR)","ACAP (VA)", "ACPF","ACPV (V)","ACPC (A)"};
+char* MeasurementName[13] = {"DCV (V)","DCC (A)","DCP (W)","ACV (V)","ACC (A)","ACF (Hz)","ACPD (Degrees)","ACP (W)","ACRP (VAR)","ACAP (VA)", "ACPF","ACPV (V)","ACPC (A)"};
 int Menu; // 0 = main screen, 1 = measurement select, 2 = settings, 3 = edit turns ratio
 int SelectPosition[2]; // 0 = row position for the main screen, 1 = secondary position used for other menus
 int ButtonTurn = 1; // Button turn baton
 int Backlight[] = {0, 64, 128, 192, 255}; // Values for OCR0B for Backlight
 int BacklightIndexCopy; // Copy of Backlight Index
 float TurnsRatioCopy; // Copy of Transformer Turns Ratio
-int lcdtick = 0;
+int LcdTick; // Tick to indicate screen refresh
 
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr) {
 	uint8_t cycles;
@@ -168,8 +168,7 @@ uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr
 	return 1;
 }
 
-uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr)
-{
+uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr) {
 	// Re-use library for delays
 	
 	switch(msg)
@@ -221,23 +220,46 @@ uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void
 	return 1;
 }
 
+float eepromRead(unsigned int address) {
+    /* Wait for completion of previous write */
+    while(EECR & (1<<EEPE)){
+    }
+    /* Set up address register */
+    EEAR = address;
+    /* Start eeprom read by writing EERE */
+    EECR |= (1<<EERE);
+    /* Return data from Data Register */
+    return EEDR;
+}
+
+void eepromUpdate(unsigned int address, float data) {
+    /* Wait for completion of previous write */
+    while(EECR & (1<<EEPE)) {
+    }
+    if (data != eepromRead(address)) {
+        /* Set up address and Data Registers */
+        EEAR = address;
+        EEDR = data;
+        /* Write logical one to EEMPE */
+        EECR |= (1<<EEMPE);
+        /* Start eeprom write by setting EEPE */
+        EECR |= (1<<EEPE);
+    }
+}
+
 // Define An Interrupt Handler for TIMER1_COMPA Interrupt (Nesting Disabled)
-ISR(TIMER1_COMPA_vect, ISR_BLOCK) {
-    lcdtick = 1;     // signal "tick" event
+ISR(TIMER1_COMPA_vect) {
+    LcdTick = 1;     // signal "tick" event
 }
 
 int main(void) {
     lcd_init();
     init();
     
-    //clock_t Start = time(0);
-    //float Delay = 0;
-	
 	while(1){
-        if (lcdtick) {
+        if (LcdTick) {
             u8g2_ClearBuffer(&u8g2);
         }
-        //u8g2_ClearBuffer(&u8g2);
 		if (!Menu) { // The different menu screens.
 			MainScreen();
 		} else if (Menu == 1) {
@@ -251,15 +273,10 @@ int main(void) {
 			DrawPCIcon();
 		}
 		DrawTime();
-        if (lcdtick) {
+        if (LcdTick) {
             u8g2_SendBuffer(&u8g2);
-            lcdtick = 0;
+            LcdTick = 0;
         }
-        //if (time(0) > (Start + Delay)) {
-            //u8g2_SendBuffer(&u8g2);
-            //Start = time(0);
-        //}
-        //u8g2_SendBuffer(&u8g2);
 	}
 }
 
@@ -284,6 +301,8 @@ void lcd_init(void){
 void init(){
     clock_prescale_set(clock_div_1); // set the clock prescaler to 1
     
+    eeprom_update_float((float*)(MenuSettingsEEPROMAddresses[4]), (float)4);
+    
     // Set input ports for buttons
     DDRB &= ~(1<<1)|(1<<4)|(1<<6)|(1<<7); // 1 and 4 are the Enter and Back buttons
     DDRD &= ~(1<<2)|(1<<6)|(1<<7); // 2 is for checking pc connection
@@ -296,28 +315,30 @@ void init(){
     
     // Set up Timer/Counter1
     TCCR1B |= (1 << WGM12);   // Configure timer 1 for CTC mode
-    OCR1A = (uint16_t)(125000 / 4);     // Set CTC compare value to 10Hz (100mS) at 8MHz AVR clock , with a prescaler of 64
+    OCR1A = (uint16_t)(1000000 / 4);     // Set CTC compare value for 8MHz AVR clock , with a prescaler of 8 (1000000 is 1 second)
     TIMSK1 |= (1 << OCIE1A);  // Enable CTC interrupt
-    TCCR1B |= ((1 << CS10) | (1 << CS11)); // Start Timer/Counter1 at F_CPU/64 
+    TCCR1B |= (1 << CS11); // Start Timer/Counter1 at F_CPU/8
 
     // Enable global interrupts 
     sei();
     
-    if ((eeprom_read_word((uint16_t)MEASUREMENT_1_ADDRESS) < 1) || (eeprom_read_word((uint16_t*) MEASUREMENT_1_ADDRESS) > 13)) { // If the value at the 1st measurement address is within this range, then it is safe to say that values are stored in the addresses for all the menu settings.
+    if (((int)eeprom_read_float((float*)MEASUREMENT_1_ADDRESS) < 1) || ((int)eeprom_read_float((float*) MEASUREMENT_1_ADDRESS) > 13)) { // If the value at the 1st measurement address is within this range, then it is safe to say that values are stored in the addresses for all the menu settings.
 		for (int i = 0; i < 6; i++){ // Write initial values to menu setting addresses
 			if (i == 4) {
-				eeprom_update_float((float*)MenuSettingsEEPROMAddresses[i], 4); // Initial Backlight value. 4 is 100% Backlight.
+				eeprom_update_float((float*)i, (float)4); // Initial Backlight value. 4 is 100% Backlight.
 			} else {
-				eeprom_update_float((float*)MenuSettingsEEPROMAddresses[i], 1);
+				eeprom_update_float((float*)i, 1);
 			}
 		}
+        OCR0B = Backlight[4];
     } else {
 		for (int i = 0; i < 6; i++){
-			MenuSettings[0] = eeprom_read_float ((float*)MenuSettingsEEPROMAddresses[i]); // Read values from addresses if values are already stored there.
+			MenuSettings[i] = (float)eeprom_read_float((float*)(MenuSettingsEEPROMAddresses[i])); // Read values from addresses if values are already stored there.
 		}
+        OCR0B = 0;
     }
-	
-	OCR0B = Backlight[(int)MenuSettings[4]]; // Set Backlight
+	//OCR0B = Backlight[4]; // Set Backlight
+	//OCR0B = Backlight[(int)eeprom_read_float((float*)BACKLIGHT_ADDRESS)]; // Set Backlight
 }
 
 void DrawPCIcon() {
@@ -330,7 +351,7 @@ void DrawTime() {
     u8g2_SetFont(&u8g2, u8g2_font_u8glib_4_hr); // Change to smaller font
     u8g2_SetDrawColor(&u8g2, 2);
     char Index[2];
-	sprintf(Index , "%d", lcdtick);
+	sprintf(Index , "%d", MEASUREMENT_4_ADDRESS);
 	u8g2_DrawStr(&u8g2, 55, 57, Index);
 	u8g2_DrawStr(&u8g2, 60, 57, "{INSERT DATETIME}");
     u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr);
@@ -349,6 +370,11 @@ void MainScreenDraw() {
         }
 		if (i<4) {
 			u8g2_DrawStr(&u8g2, 1, 10 + (i * 13), MeasurementName[(int)MenuSettings[i]]); // MenuSettings stores the index for which measurement it is
+            /*
+            char Measurement[7];
+            sprintf(Measurement , "%.2f", NULL); // Convert Measurement float value to string
+            u8g2_DrawStr(&u8g2, 2, 51, Measurement);
+            */
 			u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), "{INSERT MEASUREMENT VALUES}"); // Each row is 9 high with 2 space in between
 		} else {
 			u8g2_DrawStr(&u8g2, 1, 61, "Settings");
@@ -367,8 +393,7 @@ void MainScreen() {
             u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
 			if (SelectPosition[0]<4) {
 				Menu = 1; // Measurement select menu
-				// SelectPosition[1] = (int)eeprom_read_word((uint16_t*)MenuSettingsEEPROMAddresses[SelectPosition[0]]); // Set position at the index of the measurement for Measurement select screen.
-                SelectPosition[1] = (int)MenuSettings[SelectPosition[0]]; // Set position at the index of the measurement for Measurement select screen.
+				SelectPosition[1] = (int)MenuSettings[SelectPosition[0]]; // Set position at the index of the measurement for Measurement select screen.
                 MeasurementSelectDraw();
 			} else if (SelectPosition[0] == 4) {
 				Menu = 2; // Settings menu
@@ -418,6 +443,8 @@ void MeasurementSelectDraw() {
 			u8g2_DrawStr(&u8g2, 50, 10 + (i * 13), MeasurementName[SelectPosition[1] + (i - SelectPosition[0])]);
 		}
 	}
+    u8g2_SetDrawColor(&u8g2, 0);
+    u8g2_DrawBox(&u8g2, 0, (4 * 13) - 1, 128, 13);
 	u8g2_SetDrawColor(&u8g2, 2);
 	u8g2_DrawLine(&u8g2, 44, 1, 44, 48); // Line separating measurement name from measurement value
 }
@@ -428,7 +455,7 @@ void MeasurementSelect(){
 		if (ENTER || LEFT) { // Enter and left
 			ButtonTurn = 0;
 			MenuSettings[SelectPosition[0]] = SelectPosition[1]; // Confirm measurement selection
-			eeprom_update_float((float*)MenuSettingsEEPROMAddresses[SelectPosition[0]], SelectPosition[1] + 1); // Update in EEPROM
+			eeprom_update_float((float*)(MenuSettingsEEPROMAddresses[SelectPosition[0]]), SelectPosition[1] + 1); // Update in EEPROM
 			Menu--;
 			ButtonTurn = 1;
 		} else if (BACK) { // Back
