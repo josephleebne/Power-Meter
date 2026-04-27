@@ -4,6 +4,7 @@
 #include <avr/io.h>
 #include <math.h> //ASK!!!!!!
 #include <avr/interrupt.h> //Ask!
+#include <util/delay.h>
 
 //UART COMMUNICATION
 #define F_CPU 8000000UL
@@ -13,7 +14,7 @@
 //MEASUREMENTS: for measurements read from the channels, and measurements calculated from those
 #define VREF 5.0f
 #define NUM_SAMPLES 100
-#define NO_MEASUREMENTS 16
+#define NO_MEASUREMENTS 16 //See comment at the end of main for the format
 #define MEAS_DC_VOLTAGE              0
 #define MEAS_DC_CURRENT              1
 #define MEAS_AC_VOLTAGE              2
@@ -64,6 +65,9 @@ volatile uint8_t areReadingsReady = 0;
 volatile uint8_t ADCSelectedChannel = 0;
 volatile uint8_t discardNextSample = 0;
 
+//Timer
+volatile uint8_t timerFlag = 1;
+
 void UART_init(void) {
     UBRR0H = (unsigned char)(UBRR_VALUE >> 8);
     UBRR0L = (unsigned char)UBRR_VALUE;
@@ -104,6 +108,26 @@ void UART_print_float_2dp(float value) {
     char buffer[16];
     snprintf(buffer, sizeof(buffer), "%u.%02u", whole, frac);
     UART_print(buffer);
+}
+
+//OCR2A triggers approx every 30ms
+void setup_timer(void){
+    
+    //CTC mode
+    TCCR2A = (1 << WGM21);
+    
+    //Set output compare value
+    OCR2A = 255;
+    
+    // /1024 prescalar
+    TCCR2B |= (1 << CS22) | (1 << CS21) | (1 << CS20);
+    
+    //Enable interrupts
+    TIMSK2 |= (1 << OCIE2A);
+}
+
+ISR(TIMER2_COMPA_vect){
+    timerFlag = 1;
 }
 
 void setup_ADC(void) {
@@ -197,7 +221,7 @@ float calculate_DC_voltage(uint16_t ADCreading) {
 //Converts the ADC reading into DC current, then calculates input DC current
 float calculate_DC_current(uint16_t ADCreading) {
     
-    float scalingRatio = 21;
+    float scalingRatio = 1.0f;
     float errorRatio = 1.0f;
     
     //Set convert ADC reading into voltage
@@ -242,7 +266,7 @@ float calculate_AC_voltage_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
 
 float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
     float scalingRatio = 1.0f;
-    float currentToVoltageRatio = 10.0f;
+    float currentToVoltageRatio = 1.0f;
     float errorRatio = 1.0f;
 
     float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
@@ -269,6 +293,7 @@ void UART_print_measurements(float arr[NO_MEASUREMENTS]) {
 int main(void) {
     UART_init();
     setup_ADC();
+    setup_timer();
 
     ADC_select_channel(DC_VOLTAGE_CHANNEL);
 
@@ -347,7 +372,7 @@ int main(void) {
             measurements[MEAS_DC_VOLTAGE] = calculate_DC_voltage(localDCVoltageADC);
 
             measurements[MEAS_DC_CURRENT] = calculate_DC_current(localDCCurrentADC);
-
+/*
             //Print debug output (for me)
             UART_print("DC Voltage ADC = ");
             UART_print_uint(localDCVoltageADC);
@@ -368,9 +393,12 @@ int main(void) {
             UART_print("AC Current (High) RMS = ");
             UART_print_float_2dp(measurements[MEAS_AC_CURRENT_HIGH]);
             UART_print(" A\r\n");
-
-            //print full measurement array for communication to gui
-            UART_print_measurements(measurements);
+*/
+            //print full measurement array for communication to gui, every 30ms
+            if (timerFlag) {
+                timerFlag = 0;
+                UART_print_measurements(measurements);
+            }
             //ARRAY FORMAT IS: [DC Voltage, DC Current, AC Voltage RMS, AC Current (high current mode) RMS, AC Current (low current mode) RMS, AC Voltage Vpp, AC Current (high current mode) Vpp, AC Current (low current mode) Vpp, phase difference, power factor, frequency, DC power, AC real power, AC reactive power, AC apparant power, RTC time]
         }
     }
