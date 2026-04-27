@@ -57,7 +57,7 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 
 #include "u8g2.h"
 #include <util/delay.h>
-#include <avr/eeprom.h>
+//#include <avr/eeprom.h>
 #include <math.h>
 #include <stdio.h>
 #include <avr/power.h>
@@ -120,7 +120,28 @@ void DrawScreen();
 u8g2_t u8g2;
 float MenuSettings[] = {0, 0, 0, 0, 4, 1}; // Measurement 1, Measurement 2, Measurement 3, Measurement 4, BacklightIndex, TurnsRatio
 int MenuSettingsEEPROMAddresses[] = {MEASUREMENT_1_ADDRESS, MEASUREMENT_2_ADDRESS, MEASUREMENT_3_ADDRESS, MEASUREMENT_4_ADDRESS, BACKLIGHT_ADDRESS, TURNS_RATIO_ADDRESS};
-char* MeasurementName[13] = {"DCV (V)","DCC (A)","DCP (W)","ACV (V)","ACC (A)","ACF (Hz)","ACPD (Degrees)","ACP (W)","ACRP (VAR)","ACAP (VA)", "ACPF","ACPV (V)","ACPC (A)"};
+
+// [DC Voltage, 
+/*
+DC Current, 
+        AC Voltage RMS, 
+        AC Current (high current mode) RMS, 
+        AC Current (low current mode) RMS, 
+        AC Voltage Vpp, 
+        AC Current (high current mode) Vpp, 
+        AC Current (low current mode) Vpp, 
+        phase difference, 
+        power factor, 
+        frequency, 
+        DC power, 
+        AC real power, 
+        AC reactive power, 
+        AC apparent power
+   */     
+
+//char* MeasurementName[13] = {"DCV (V)","DCC (A)","DCP (W)","ACV (V)","ACC (A)","ACF (Hz)","ACPD (Degrees)","ACP (W)","ACRP (VAR)","ACAP (VA)", "ACPF","ACPV (V)","ACPC (A)"};
+char* MeasurementName[14] = {"DCV (V)","DCC (A)","ACV (V)","ACCH (A)","ACCL (A)","ACVPP (V)","ACCPPH (A)","ACCPPL (A)","PD","PF","F (Hz)","DCP (W)","ACRP (W)","ACAP (W)"};
+
 int Menu; // 0 = main screen, 1 = measurement select, 2 = settings, 3 = edit turns ratio
 int SelectPosition[2]; // 0 = row position for the main screen, 1 = secondary position used for other menus
 int ButtonTurn = 1; // Button turn baton
@@ -301,7 +322,7 @@ void lcd_init(void){
 void init(){
     clock_prescale_set(clock_div_1); // set the clock prescaler to 1
     
-    eeprom_update_float((float*)(MenuSettingsEEPROMAddresses[4]), (float)4);
+    //eeprom_update_float((float*)(MenuSettingsEEPROMAddresses[4]), (float)4);
     
     // Set input ports for buttons
     DDRB &= ~(1<<1)|(1<<4)|(1<<6)|(1<<7); // 1 and 4 are the Enter and Back buttons
@@ -322,20 +343,24 @@ void init(){
     // Enable global interrupts 
     sei();
     
-    if (((int)eeprom_read_float((float*)MEASUREMENT_1_ADDRESS) < 1) || ((int)eeprom_read_float((float*) MEASUREMENT_1_ADDRESS) > 13)) { // If the value at the 1st measurement address is within this range, then it is safe to say that values are stored in the addresses for all the menu settings.
-		for (int i = 0; i < 6; i++){ // Write initial values to menu setting addresses
+    if (((int)eepromRead(MEASUREMENT_1_ADDRESS) >= 1) && ((int)eepromRead(MEASUREMENT_1_ADDRESS) <= 14)) {
+		for (int i = 0; i < 6; i++){
+            if (i < 4) {
+                MenuSettings[i] = (eepromRead(MenuSettingsEEPROMAddresses[i]) - 1); // Read values from addresses if values are already stored there.
+            } else {
+                MenuSettings[i] = eepromRead(MenuSettingsEEPROMAddresses[i]); // Read values from addresses if values are already stored there.
+            }
+		}
+        OCR0B = 0;
+    } else {
+        for (int i = 0; i < 6; i++){ // Write initial values to menu setting addresses
 			if (i == 4) {
-				eeprom_update_float((float*)i, (float)4); // Initial Backlight value. 4 is 100% Backlight.
+				eepromUpdate(i, (float)4); // Initial Backlight value. 4 is 100% Backlight.
 			} else {
-				eeprom_update_float((float*)i, 1);
+				eepromUpdate(i, 1);
 			}
 		}
         OCR0B = Backlight[4];
-    } else {
-		for (int i = 0; i < 6; i++){
-			MenuSettings[i] = (float)eeprom_read_float((float*)(MenuSettingsEEPROMAddresses[i])); // Read values from addresses if values are already stored there.
-		}
-        OCR0B = 0;
     }
 	//OCR0B = Backlight[4]; // Set Backlight
 	//OCR0B = Backlight[(int)eeprom_read_float((float*)BACKLIGHT_ADDRESS)]; // Set Backlight
@@ -351,8 +376,8 @@ void DrawTime() {
     u8g2_SetFont(&u8g2, u8g2_font_u8glib_4_hr); // Change to smaller font
     u8g2_SetDrawColor(&u8g2, 2);
     char Index[2];
-	sprintf(Index , "%d", MEASUREMENT_4_ADDRESS);
-	u8g2_DrawStr(&u8g2, 55, 57, Index);
+	sprintf(Index , "%d", (int)eepromRead(MEASUREMENT_3_ADDRESS));
+	u8g2_DrawStr(&u8g2, 55, 61, Index);
 	u8g2_DrawStr(&u8g2, 60, 57, "{INSERT DATETIME}");
     u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr);
 }
@@ -373,7 +398,7 @@ void MainScreenDraw() {
             /*
             char Measurement[7];
             sprintf(Measurement , "%.2f", NULL); // Convert Measurement float value to string
-            u8g2_DrawStr(&u8g2, 2, 51, Measurement);
+            u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), Measurement);
             */
 			u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), "{INSERT MEASUREMENT VALUES}"); // Each row is 9 high with 2 space in between
 		} else {
@@ -455,7 +480,7 @@ void MeasurementSelect(){
 		if (ENTER || LEFT) { // Enter and left
 			ButtonTurn = 0;
 			MenuSettings[SelectPosition[0]] = SelectPosition[1]; // Confirm measurement selection
-			eeprom_update_float((float*)(MenuSettingsEEPROMAddresses[SelectPosition[0]]), SelectPosition[1] + 1); // Update in EEPROM
+			eepromUpdate(MenuSettingsEEPROMAddresses[SelectPosition[0]], SelectPosition[1] + 1); // Update in EEPROM
 			Menu--;
 			ButtonTurn = 1;
 		} else if (BACK) { // Back
@@ -465,15 +490,15 @@ void MeasurementSelect(){
 		} else if (UP) { // Up
 			ButtonTurn = 0;
 			SelectPosition[1]--;
-			if (SelectPosition[1]<0) {
-				SelectPosition[1] = 12;
+			if (SelectPosition[1] < 0) {
+				SelectPosition[1] = 13;
 			}
 			MeasurementSelectDraw();
 			ButtonTurn = 1;
 		} else if (DOWN) { // Down
 			ButtonTurn = 0;
 			SelectPosition[1]++;
-			if (SelectPosition[1]>12) {
+			if (SelectPosition[1] > 13) {
 				SelectPosition[1] = 0;
 			}
 			MeasurementSelectDraw();
@@ -526,7 +551,7 @@ void Settings() {
 				Menu--;
 				MenuSettings[4] = BacklightIndexCopy;
 				OCR0B = Backlight[(int)MenuSettings[4]];
-				eeprom_update_float((float*)MenuSettingsEEPROMAddresses[4], MenuSettings[4]);
+				//eeprom_update_float((float*)MenuSettingsEEPROMAddresses[4], MenuSettings[4]);
 				ButtonTurn = 1;
 			}
 		} else if ((PINB & (1<<4))) { // Back. Exit settings without saving backlight setting changes
@@ -603,7 +628,7 @@ void TurnsRatioMenu(){
 		if ((PINB & (1<<1))) { // Enter. Confirm New Turn Ratio
 			ButtonTurn = 0;
 			MenuSettings[5] = TurnsRatioCopy; 
-			eeprom_update_float((float*)MenuSettingsEEPROMAddresses[5], TurnsRatioCopy);
+			//eeprom_update_float((float*)MenuSettingsEEPROMAddresses[5], TurnsRatioCopy);
 			Menu--;
 			ButtonTurn = 1;
             SettingsDraw();
