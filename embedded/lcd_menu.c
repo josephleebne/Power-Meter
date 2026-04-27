@@ -1,48 +1,3 @@
-/*
- * lcd menu.c
- *
- * Created: 18/03/2026 7:42:38 PM
- * Author : User
- */ 
-
-/*
-
-  main.c
-	
-  AVR Test Project
-  This project will use 4-Wire SW SPI
-
-  Universal 8bit Graphics Library (https://github.com/olikraus/u8g2/)
-
-  Copyright (c) 2018, olikraus@gmail.com
-  All rights reserved.
-
-  Redistribution and use in source and binary forms, with or without modification, 
-  are permitted provided that the following conditions are met:
-
-  * Redistributions of source code must retain the above copyright notice, this list 
-    of conditions and the following disclaimer.
-    
-  * Redistributions in binary form must reproduce the above copyright notice, this 
-    list of conditions and the following disclaimer in the documentation and/or other 
-    materials provided with the distribution.
-
-  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND 
-  CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
-  INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
-  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE 
-  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR 
-  CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, 
-  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT 
-  NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; 
-  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER 
-  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, 
-  STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) 
-  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF 
-  ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.  
-	
-*/
-
 #include <avr/io.h>
 
 FUSES = {
@@ -100,6 +55,8 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 #define BACKLIGHT_ADDRESS 4
 #define TURNS_RATIO_ADDRESS 5
 
+#define MEASUREMENTS 15
+
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 void lcd_init();
@@ -121,15 +78,15 @@ u8g2_t u8g2;
 float MenuSettings[] = {0, 0, 0, 0, 4, 1}; // Measurement 1, Measurement 2, Measurement 3, Measurement 4, BacklightIndex, TurnsRatio
 int MenuSettingsEEPROMAddresses[] = {MEASUREMENT_1_ADDRESS, MEASUREMENT_2_ADDRESS, MEASUREMENT_3_ADDRESS, MEASUREMENT_4_ADDRESS, BACKLIGHT_ADDRESS, TURNS_RATIO_ADDRESS};
 
-// [DC Voltage, 
 /*
+DC Voltage,
 DC Current, 
-        AC Voltage RMS, 
-        AC Current (high current mode) RMS, 
-        AC Current (low current mode) RMS, 
-        AC Voltage Vpp, 
-        AC Current (high current mode) Vpp, 
-        AC Current (low current mode) Vpp, 
+AC Voltage RMS, 
+AC Current (high current mode) RMS, 
+AC Current (low current mode) RMS, 
+AC Voltage Vpp, 
+AC Current (high current mode) Vpp, 
+AC Current (low current mode) Vpp, 
         phase difference, 
         power factor, 
         frequency, 
@@ -140,7 +97,21 @@ DC Current,
    */     
 
 //char* MeasurementName[13] = {"DCV (V)","DCC (A)","DCP (W)","ACV (V)","ACC (A)","ACF (Hz)","ACPD (Degrees)","ACP (W)","ACRP (VAR)","ACAP (VA)", "ACPF","ACPV (V)","ACPC (A)"};
-char* MeasurementName[14] = {"DCV (V)","DCC (A)","ACV (V)","ACCH (A)","ACCL (A)","ACVPP (V)","ACCPPH (A)","ACCPPL (A)","PD","PF","F (Hz)","DCP (W)","ACRP (W)","ACAP (W)"};
+char* MeasurementName[15] = {"DCV (V)",
+	"DCC (A)",
+	"ACV (V)",
+	"ACCH (A)",
+	"ACCL (A)",
+	"ACVPP (V)",
+	"ACCPPH (A)",
+	"ACCPPL (A)",
+	"PD",
+	"PF",
+	"F (Hz)",
+	"DCP (W)",
+	"ACRP (W)",
+	"ACRRP (W)",
+	"ACAP (W)"};
 
 int Menu; // 0 = main screen, 1 = measurement select, 2 = settings, 3 = edit turns ratio
 int SelectPosition[2]; // 0 = row position for the main screen, 1 = secondary position used for other menus
@@ -491,14 +462,14 @@ void MeasurementSelect(){
 			ButtonTurn = 0;
 			SelectPosition[1]--;
 			if (SelectPosition[1] < 0) {
-				SelectPosition[1] = 13;
+				SelectPosition[1] = MEASUREMENTS - 1;
 			}
 			MeasurementSelectDraw();
 			ButtonTurn = 1;
 		} else if (DOWN) { // Down
 			ButtonTurn = 0;
 			SelectPosition[1]++;
-			if (SelectPosition[1] > 13) {
+			if (SelectPosition[1] > (MEASUREMENTS - 1)) {
 				SelectPosition[1] = 0;
 			}
 			MeasurementSelectDraw();
