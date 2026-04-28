@@ -666,7 +666,7 @@ void DrawTime() {
     u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr);
 }
 
-void MainScreenDraw(float* measurements) {
+void MainScreenDraw(float measurements[]) {
 	for (int i=0; i<5; i++) {
         if (i == SelectPosition[0]) { // Selection Box
             u8g2_SetDrawColor(&u8g2, 1);
@@ -679,7 +679,7 @@ void MainScreenDraw(float* measurements) {
         }
 		if (i<4) {
 			u8g2_DrawStr(&u8g2, 1, 10 + (i * 13), MeasurementName[(int)MenuSettings[i]]); // MenuSettings stores the index for which measurement it is
-            char Measurement[7];
+            char Measurement[10];
             sprintf(Measurement , "%.2f", measurements[(int)MenuSettings[i]]); // Convert Measurement float value to string
             u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), Measurement); // Each row is 9 high with 2 space in between
 		} else {
@@ -690,7 +690,7 @@ void MainScreenDraw(float* measurements) {
     u8g2_DrawLine(&u8g2, 44, 1, 44, 48); // Line separating measurement name from measurement value
 }
 
-void MainScreen(float* measurements) {
+void MainScreen(float measurements[]) {
 	MainScreenDraw(measurements); // Refreshes display constantly to display changing values.
 	if (ButtonTurn) { // Attempts to prevent pressing of multiple buttons.
 		if (ENTER || RIGHT) { // Enter and right
