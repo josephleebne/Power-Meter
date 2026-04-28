@@ -86,26 +86,29 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 #define MEAS_AC_APPARANT_POWER 14
 #define MEAS_RTC_TIME 15
 
-//For frequency and phase measurement
+//For timing and frequency
+#define HYSTERESIS 0.5f
+volatile uint32_t timer2Overflows = 0;
+volatile uint8_t  timer2Flag = 0;
 volatile uint32_t periodTicks = 0;
-volatile uint32_t totalPeriodAccumulator = 0;
-volatile uint8_t cycleCounter = 0;
-static uint32_t lastCrossingTime = 0;
-static uint16_t lastVoltageValue = 512;
-static uint8_t timer2Flag = 0;
-static uint8_t timer2Overflows = 0;
+volatile uint32_t totalPeriodAccumulator = 0; 
+volatile uint8_t  cycleCounter = 0;
+
 #define FREQ_AVG_COUNT 10
-#define T2_PRESCALER 1024UL        // Timer 2 Prescaler
+#define T2_PRESCALER 1024UL
 // This calculates the tick rate of the timer
 #define T2_TICK_FREQ ((float)F_CPU / (float)T2_PRESCALER)
 // This creates the numerator for the final calculation
 #define FREQ_CALC_CONSTANT (T2_TICK_FREQ * (float)FREQ_AVG_COUNT)
 
-//For phase measurement
-volatile uint32_t voltageCrossingTime = 0;
-volatile uint32_t currentCrossingTime = 0;
-volatile float phaseShiftDeg = 0;
-static uint16_t lastCurrentValue = 512;
+// Zero-crossing state
+static uint16_t lastACValue = 512;
+static uint16_t lastACCurrentValue = 512;
+static uint32_t lastCrossingTime = 0;
+
+// Phase timestamps
+volatile uint32_t vCrossingTime = 0;
+volatile uint32_t iCrossingTime = 0;
 
 //CHANNELS: the actual readings from the circuit
 #define NO_CHANNELS 4
@@ -291,6 +294,7 @@ void ADC_select_channel(uint8_t channel) {
 }
 
 //Save the ADC reading, switch channels, and start another conversion
+//Save the ADC reading, switch channels, and start another conversion
 ISR(ADC_vect) {
 
     uint16_t channel = ADCSelectedChannel;
@@ -306,16 +310,17 @@ ISR(ADC_vect) {
     //Save ADC reading to array
     ADCReading[channel] = reading;
 
-    // --- FREQUENCY DETECTION (Independent of RMS Window) ---
+    // --- FREQUENCY AND PHASE DETECTION ---
+    uint16_t midPoint = 512; 
+    
     if (channel == AC_VOLTAGE_CHANNEL) {
-        uint16_t midPoint = 512; // Adjust if your DC bias is different
-        uint8_t hysteresis = 5;
-        
-        // Detect Positive-going Zero Crossing
-        if (lastVoltageValue <= (midPoint - hysteresis) && reading > (midPoint + hysteresis)) {
+        // Detect Positive-going Zero Crossing for Voltage
+        if (lastACValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS)) {
             uint32_t currentTime = ((uint32_t)timer2Overflows * 256) + TCNT2;
             uint32_t duration = currentTime - lastCrossingTime;
             lastCrossingTime = currentTime;
+            
+            vCrossingTime = currentTime; // For phase difference
 
             totalPeriodAccumulator += duration;
             cycleCounter++;
@@ -326,7 +331,15 @@ ISR(ADC_vect) {
                 cycleCounter = 0;
             }
         }
-        lastVoltageValue = reading;
+        lastACValue = reading;
+    }
+
+    if (channel == AC_CURRENT_HIGH_CHANNEL) {
+        // Detect Positive-going Zero Crossing for Current
+        if (lastACCurrentValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS)) {
+            iCrossingTime = ((uint32_t)timer2Overflows * 256) + TCNT2;
+        }
+        lastACCurrentValue = reading;
     }
 
     //AC Voltage measurement
@@ -400,8 +413,6 @@ float calculate_DC_current(uint16_t ADCreading) {
 }
 
 float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count) {
-    float errorRatio = 1.07f;
-    float errorSum = 0.0f;
 	if (count == 0) { //Prevent 0 division
 		return 0.0f;
 	}
@@ -416,7 +427,7 @@ float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count) {
 		variance = 0.0f;
 	}
 
-	return sqrtf(variance) * errorRatio;
+	return sqrtf(variance);
 }
 
 float ADC_counts_to_volts(float ADCCounts) {
@@ -459,6 +470,33 @@ float calculate_frequency(uint32_t ticks) {
     float freq = (float)FREQ_CALC_CONSTANT / (float)ticks;
 
     return freq;
+}
+
+float calculate_phase_difference(uint32_t vTime, uint32_t iTime, uint32_t avgPeriodTicks) {
+    if (avgPeriodTicks == 0) return 0.0f;
+
+    // Get the period of a single cycle from the averaged total
+    float singleCycleTicks = (float)avgPeriodTicks / (float)FREQ_AVG_COUNT;
+    
+    // Calculate raw difference
+    int32_t diff = (int32_t)iTime - (int32_t)vTime;
+
+    // Correct for the multiplexer delay (approx 2 ADC cycles + code)
+    float correctedDiff = (float)diff; 
+
+    // Normalize to +/- 180 degrees
+    float phase = (correctedDiff / singleCycleTicks) * 360.0f;
+    while (phase > 180.0f) phase -= 360.0f;
+    while (phase < -180.0f) phase += 360.0f;
+
+    return phase;
+}
+
+float calculate_power_factor(float phase){
+    float phaseRadians = phase * M_PI / 180.0f;
+    float powerFactor = cosf(phaseRadians);
+    
+    return powerFactor;
 }
 
 void UART_print_measurements(float arr[NO_MEASUREMENTS]) {
@@ -1075,8 +1113,10 @@ int main(void) {
 
             measurements[MEAS_DC_CURRENT] = calculate_DC_current(localDCCurrentADC);
             
-            //Save frequency
+            //Save frequency and related measurements
             measurements[MEAS_FREQUENCY] = calculate_frequency(localPeriodTicks);
+            measurements[MEAS_PHASE_DIFFERENCE] = calculate_phase_difference(vCrossingTime, iCrossingTime, localPeriodTicks);
+            measurements[MEAS_POWER_FACTOR] = calculate_power_factor(measurements[MEAS_PHASE_DIFFERENCE]);
             
             //print full measurement array for communication to gui
             UART_print_measurements(measurements);
