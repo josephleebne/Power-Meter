@@ -372,31 +372,31 @@ ISR(ADC_vect) {
 float calculate_DC_voltage(uint16_t ADCreading) {
 	
 	float scalingRatio =  (4.724f / 10.0f);
-	float errorRatio = 1.54f;
-    float errorSum = 0.0f;
+	float errorRatio = 1.517f;
+    float errorSum = -0.084f;
 	
 	//Set convert ADC reading into voltage
 	float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
 	
-	float Vin = (scaledVout / scalingRatio) * errorRatio;
-
-	return Vin;
+	float vin = (scaledVout / scalingRatio);
+    float vinCorrected = vin * errorRatio + errorSum;
+	return vinCorrected;
 }
 
 //Converts the ADC reading into DC current, then calculates input DC current
 float calculate_DC_current(uint16_t ADCreading) {
 	
 	float scalingRatio = 1.0f;
-	float errorRatio = 0.38f;
-    float errorSum = 0.1f;
+	float errorRatio = 0.445f;
+    float errorSum = -0.114f;
 	
 	//Set convert ADC reading into voltage
 	float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
 	
-	float Vin = (scaledVout / scalingRatio) * errorRatio;
-    Vin += Vin * errorSum * 1.5;
+	float vin = (scaledVout / scalingRatio);
+    float vinCorrected = vin * errorRatio + errorSum;
 
-	return Vin;
+	return vinCorrected;
 }
 
 float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count) {
@@ -425,24 +425,28 @@ float ADC_counts_to_volts(float ADCCounts) {
 
 float calculate_AC_voltage_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
 	float scalingRatio = (1.4f / 14.14f);
-	float errorRatio = 1.0f;
+	float errorRatio = 1.138f;
+    float errorSum = -0.113f;
 
 	float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
 	float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
-
-	return (ADCRMSVoltage / scalingRatio) * errorRatio;
+    
+    float vin = ADCRMSVoltage / scalingRatio;
+    float vinCorrected = vin * errorRatio + errorSum;
+	return vinCorrected;
 }
 
 float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
 	float scalingRatio = 1.0f;
 	float currentToVoltageRatio = 10.0f;
-	float errorRatio = 1.0f;
+	float errorRatio = 1.552f;
+    float errorSum = -1.180f;
 
 	float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
 	float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
 	float currentRMS = (ADCRMSVoltage / scalingRatio) * currentToVoltageRatio;
-
-	return currentRMS * errorRatio;
+    float currentRMSCorrected = currentRMS * errorRatio + errorSum;
+	return currentRMSCorrected;
 }
 
 float calculate_frequency(uint32_t ticks) {
