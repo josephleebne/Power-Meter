@@ -67,20 +67,39 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 
 //MEASUREMENTS: for measurements read from the channels, and measurements calculated from those
 #define VREF 5.0f
-#define NUM_SAMPLES 100
-#define NO_MEASUREMENTS 16 //See comment at the end of main for the format
-#define MEAS_DC_VOLTAGE              0
-#define MEAS_DC_CURRENT              1
-#define MEAS_AC_VOLTAGE              2
-#define MEAS_AC_CURRENT_HIGH         3
-#define MEAS_AC_CURRENT_LOW          4
-#define MEAS_PHASE                   5
-#define MEAS_POWER_FACTOR            6
-#define MEAS_FREQUENCY               7
-#define MEAS_REAL_POWER              8
-#define MEAS_REACTIVE_POWER          9
-#define MEAS_APPARENT_POWER          10
-#define MEAS_TIME                    11
+#define NUM_SAMPLES 500
+#define NO_MEASUREMENTS 16
+#define MEAS_DC_VOLTAGE 0
+#define MEAS_DC_CURRENT 1
+#define MEAS_AC_VOLTAGE 2
+#define MEAS_AC_CURRENT_HIGH 3
+#define MEAS_AC_CURRENT_LOW 4
+#define MEAS_AC_VOLTAGE_VPP 5
+#define MEAS_AC_CURRENT_HIGH_VPP 6
+#define MEAS_AC_CURRENT_LOW_VPP 7
+#define MEAS_PHASE_DIFFERENCE 8
+#define MEAS_POWER_FACTOR 9
+#define MEAS_FREQUENCY 10
+#define MEAS_DC_POWER 11
+#define MEAS_AC_REAL_POWER 12
+#define MEAS_AC_REACTIVE_POWER 13
+#define MEAS_AC_APPARANT_POWER 14
+#define MEAS_RTC_TIME 15
+
+//For frequency measurement
+volatile uint32_t periodTicks = 0;
+volatile uint32_t totalPeriodAccumulator = 0;
+volatile uint8_t cycleCounter = 0;
+static uint32_t lastCrossingTime = 0;
+static uint16_t lastACValue = 512;
+static uint8_t timer2Flag = 0;
+static uint8_t timer2Overflows = 0;
+#define FREQ_AVG_COUNT 10
+#define T2_PRESCALER 1024UL        // Timer 2 Prescaler
+// This calculates the tick rate of the timer
+#define T2_TICK_FREQ ((float)F_CPU / (float)T2_PRESCALER)
+// This creates the numerator for the final calculation
+#define FREQ_CALC_CONSTANT (T2_TICK_FREQ * (float)FREQ_AVG_COUNT)
 
 //CHANNELS: the actual readings from the circuit
 #define NO_CHANNELS 4
@@ -88,7 +107,6 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 #define DC_CURRENT_CHANNEL 1
 #define AC_VOLTAGE_CHANNEL 2
 #define AC_CURRENT_HIGH_CHANNEL 3
-#define AC_CURRENT_LOW_CHANNEL 4
 
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
@@ -183,9 +201,6 @@ volatile uint8_t areReadingsReady = 0;
 volatile uint8_t ADCSelectedChannel = 0;
 volatile uint8_t discardNextSample = 0;
 
-//Timer
-volatile uint8_t timerFlag = 1;
-
 void UART_init(void) {
 	UBRR0H = (unsigned char)(UBRR_VALUE >> 8);
 	UBRR0L = (unsigned char)UBRR_VALUE;
@@ -229,7 +244,7 @@ void UART_print_float_2dp(float value) {
 }
 
 //OCR2A triggers approx every 30ms
-void setup_timer(void){
+void setup_timer2(void){
 	
 	//CTC mode
 	TCCR2A = (1 << WGM21);
@@ -244,8 +259,9 @@ void setup_timer(void){
 	TIMSK2 |= (1 << OCIE2A);
 }
 
-ISR(TIMER2_COMPA_vect){
-	timerFlag = 1;
+ISR(TIMER2_COMPA_vect) {
+    timer2Flag = 1;
+    timer2Overflows++;
 }
 
 void setup_ADC(void) {
@@ -271,55 +287,79 @@ void ADC_select_channel(uint8_t channel) {
 //Save the ADC reading, switch channels, and start another conversion
 ISR(ADC_vect) {
 
-	uint16_t channel = ADCSelectedChannel;
-	uint16_t reading = ADC;
+    uint16_t channel = ADCSelectedChannel;
+    uint16_t reading = ADC;
 
-	if (discardNextSample) {
-		//Discard the first sample after switching channels
-		discardNextSample = 0;
-		ADC_start_conversion();
-		return;
-	}
+    if (discardNextSample) {
+        //Discard the first sample after switching channels
+        discardNextSample = 0;
+        ADC_start_conversion();
+        return;
+    }
 
-	//Save ADC reading to array
-	ADCReading[channel] = reading;
+    //Save ADC reading to array
+    ADCReading[channel] = reading;
 
-	//AC Voltage measurement
-	if (channel == AC_VOLTAGE_CHANNEL && !acWindowReady) {
-		//For RMS measurement
-		acVoltageSum += reading;
-		acVoltageSumSq += (uint32_t)reading * (uint32_t)reading;
+    // --- FREQUENCY DETECTION (Independent of RMS Window) ---
+    if (channel == AC_VOLTAGE_CHANNEL) {
+        uint16_t midPoint = 512; // Adjust if your DC bias is different
+        uint8_t hysteresis = 5;
+        
+        // Detect Positive-going Zero Crossing
+        if (lastACValue <= (midPoint - hysteresis) && reading > (midPoint + hysteresis)) {
+            uint32_t currentTime = ((uint32_t)timer2Overflows * 256) + TCNT2;
+            uint32_t duration = currentTime - lastCrossingTime;
+            lastCrossingTime = currentTime;
 
-		//For pk measurement, will probably remove later
-		if (reading < acVoltageMin) acVoltageMin = reading;
-		if (reading > acVoltageMax) acVoltageMax = reading;
-	}
-	//AC Current (High) measurement
-	if (channel == AC_CURRENT_HIGH_CHANNEL && !acWindowReady) {
-		//For RMS measurement
-		acCurrentHighSum += reading;
-		acCurrentHighSumSq += (uint32_t)reading * (uint32_t)reading;
+            totalPeriodAccumulator += duration;
+            cycleCounter++;
 
-		//For pk measurement, will probably remove later
-		if (reading < acCurrentHighMin) acCurrentHighMin = reading;
-		if (reading > acCurrentHighMax) acCurrentHighMax = reading;
-		
-		acSampleCount++;
-		if (acSampleCount >= NUM_SAMPLES) {
-			acWindowReady = 1;
-		}
-	}
+            if (cycleCounter >= FREQ_AVG_COUNT) {
+                periodTicks = totalPeriodAccumulator;
+                totalPeriodAccumulator = 0;
+                cycleCounter = 0;
+            }
+        }
+        lastACValue = reading;
+    }
 
-	//Change channel, and wrap back around to channel 0 if we've done all 5
-	ADCSelectedChannel++;
-	if (ADCSelectedChannel >= NO_CHANNELS){
-		ADCSelectedChannel = 0;
-		areReadingsReady = 1;
-	}
+    //AC Voltage measurement
+    if (channel == AC_VOLTAGE_CHANNEL && !acWindowReady) {
+        //For RMS measurement
+        acVoltageSum += reading;
+        acVoltageSumSq += (uint32_t)reading * (uint32_t)reading;
 
-	ADC_select_channel(ADCSelectedChannel);
-	discardNextSample = 1;
-	ADC_start_conversion();
+        //For pk measurement, will probably remove later
+        if (reading < acVoltageMin) acVoltageMin = reading;
+        if (reading > acVoltageMax) acVoltageMax = reading;
+    }
+
+    //AC Current (High) measurement
+    if (channel == AC_CURRENT_HIGH_CHANNEL && !acWindowReady) {
+        //For RMS measurement
+        acCurrentHighSum += reading;
+        acCurrentHighSumSq += (uint32_t)reading * (uint32_t)reading;
+
+        //For pk measurement, will probably remove later
+        if (reading < acCurrentHighMin) acCurrentHighMin = reading;
+        if (reading > acCurrentHighMax) acCurrentHighMax = reading;
+        
+        acSampleCount++;
+        if (acSampleCount >= NUM_SAMPLES) {
+            acWindowReady = 1;
+        }
+    }
+
+    //Change channel, and wrap back around to channel 0 if we've done all 5
+    ADCSelectedChannel++;
+    if (ADCSelectedChannel >= NO_CHANNELS){
+        ADCSelectedChannel = 0;
+        areReadingsReady = 1;
+    }
+
+    ADC_select_channel(ADCSelectedChannel);
+    discardNextSample = 1;
+    ADC_start_conversion();
 }
 
 //Converts the ADC reading into DC voltage, then calculates input DC voltage
@@ -392,6 +432,18 @@ float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count
 	float currentRMS = (ADCRMSVoltage / scalingRatio) * currentToVoltageRatio;
 
 	return currentRMS * errorRatio;
+}
+
+float calculate_frequency(uint32_t ticks) {
+    //Prevent division by zero
+    if (ticks == 0) {
+        return 0.0f;
+    }
+
+    //Formula: (Tick Frequency * Average Count) / Total Elapsed Ticks
+    float freq = (float)FREQ_CALC_CONSTANT / (float)ticks;
+
+    return freq;
 }
 
 void UART_print_measurements(float arr[NO_MEASUREMENTS]) {
@@ -924,7 +976,7 @@ int main(void) {
 	
 	UART_init();
 	setup_ADC();
-	setup_timer();
+	setup_timer2();
 
 	ADC_select_channel(DC_VOLTAGE_CHANNEL);
 
@@ -939,6 +991,8 @@ int main(void) {
 	for (uint8_t i = 0; i < NO_MEASUREMENTS; i++) {
 		measurements[i] = 4.2f;
 	} //Only code for DC/AC voltage and Current have been implemented!!
+    
+    uint32_t localPeriodTicks = 0;
     
 	while(1){
 		if (acWindowReady){
@@ -975,7 +1029,9 @@ int main(void) {
             acSampleCount = 0;
             acWindowReady = 0;
 
+            localPeriodTicks = periodTicks;
             sei();
+            
 
             //Save AC measurements
             measurements[MEAS_AC_VOLTAGE] =
@@ -1003,12 +1059,12 @@ int main(void) {
             measurements[MEAS_DC_VOLTAGE] = calculate_DC_voltage(localDCVoltageADC);
 
             measurements[MEAS_DC_CURRENT] = calculate_DC_current(localDCCurrentADC);
-
-            //print full measurement array for communication to gui, every 30ms
-            if (timerFlag) {
-                timerFlag = 0;
-                UART_print_measurements(measurements);
-            }
+            
+            //Save frequency
+            measurements[MEAS_FREQUENCY] = calculate_frequency(localPeriodTicks);
+            
+            //print full measurement array for communication to gui
+            UART_print_measurements(measurements);
             //ARRAY FORMAT IS: [DC Voltage, DC Current, AC Voltage RMS, AC Current (high current mode) RMS, AC Current (low current mode) RMS, AC Voltage Vpp, AC Current (high current mode) Vpp, AC Current (low current mode) Vpp, phase difference, power factor, frequency, DC power, AC real power, AC reactive power, AC apparant power, RTC time]
         }
 		
@@ -1037,7 +1093,7 @@ int main(void) {
 	}
 }
 //------------------------------------------------------------------------------
-//INDIVIDUAL CODE (for testing without lcd)
+//JOE'S OLD MEASUREMENT ONLY CODE (for testing without lcd)
 //#include <stdio.h>
 //#include <stdlib.h>
 //#include <stdint.h>
