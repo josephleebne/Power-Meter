@@ -67,7 +67,7 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 
 //MEASUREMENTS: for measurements read from the channels, and measurements calculated from those
 #define VREF 5.0f
-#define NUM_SAMPLES 500
+#define NUM_SAMPLES 1000
 #define NO_MEASUREMENTS 16
 #define MEAS_DC_VOLTAGE 0
 #define MEAS_DC_CURRENT 1
@@ -86,12 +86,12 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 #define MEAS_AC_APPARANT_POWER 14
 #define MEAS_RTC_TIME 15
 
-//For frequency measurement
+//For frequency and phase measurement
 volatile uint32_t periodTicks = 0;
 volatile uint32_t totalPeriodAccumulator = 0;
 volatile uint8_t cycleCounter = 0;
 static uint32_t lastCrossingTime = 0;
-static uint16_t lastACValue = 512;
+static uint16_t lastVoltageValue = 512;
 static uint8_t timer2Flag = 0;
 static uint8_t timer2Overflows = 0;
 #define FREQ_AVG_COUNT 10
@@ -100,6 +100,12 @@ static uint8_t timer2Overflows = 0;
 #define T2_TICK_FREQ ((float)F_CPU / (float)T2_PRESCALER)
 // This creates the numerator for the final calculation
 #define FREQ_CALC_CONSTANT (T2_TICK_FREQ * (float)FREQ_AVG_COUNT)
+
+//For phase measurement
+volatile uint32_t voltageCrossingTime = 0;
+volatile uint32_t currentCrossingTime = 0;
+volatile float phaseShiftDeg = 0;
+static uint16_t lastCurrentValue = 512;
 
 //CHANNELS: the actual readings from the circuit
 #define NO_CHANNELS 4
@@ -306,7 +312,7 @@ ISR(ADC_vect) {
         uint8_t hysteresis = 5;
         
         // Detect Positive-going Zero Crossing
-        if (lastACValue <= (midPoint - hysteresis) && reading > (midPoint + hysteresis)) {
+        if (lastVoltageValue <= (midPoint - hysteresis) && reading > (midPoint + hysteresis)) {
             uint32_t currentTime = ((uint32_t)timer2Overflows * 256) + TCNT2;
             uint32_t duration = currentTime - lastCrossingTime;
             lastCrossingTime = currentTime;
@@ -320,7 +326,7 @@ ISR(ADC_vect) {
                 cycleCounter = 0;
             }
         }
-        lastACValue = reading;
+        lastVoltageValue = reading;
     }
 
     //AC Voltage measurement
@@ -366,7 +372,8 @@ ISR(ADC_vect) {
 float calculate_DC_voltage(uint16_t ADCreading) {
 	
 	float scalingRatio =  (4.724f / 10.0f);
-	float errorRatio = 1.0f;
+	float errorRatio = 1.54f;
+    float errorSum = 0.0f;
 	
 	//Set convert ADC reading into voltage
 	float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
@@ -380,17 +387,21 @@ float calculate_DC_voltage(uint16_t ADCreading) {
 float calculate_DC_current(uint16_t ADCreading) {
 	
 	float scalingRatio = 1.0f;
-	float errorRatio = 1.0f;
+	float errorRatio = 0.38f;
+    float errorSum = 0.1f;
 	
 	//Set convert ADC reading into voltage
 	float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
 	
 	float Vin = (scaledVout / scalingRatio) * errorRatio;
+    Vin += Vin * errorSum * 1.5;
 
 	return Vin;
 }
 
 float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count) {
+    float errorRatio = 1.07f;
+    float errorSum = 0.0f;
 	if (count == 0) { //Prevent 0 division
 		return 0.0f;
 	}
@@ -405,7 +416,7 @@ float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count) {
 		variance = 0.0f;
 	}
 
-	return sqrtf(variance);
+	return sqrtf(variance) * errorRatio;
 }
 
 float ADC_counts_to_volts(float ADCCounts) {
@@ -424,7 +435,7 @@ float calculate_AC_voltage_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
 
 float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
 	float scalingRatio = 1.0f;
-	float currentToVoltageRatio = 1.0f;
+	float currentToVoltageRatio = 10.0f;
 	float errorRatio = 1.0f;
 
 	float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
