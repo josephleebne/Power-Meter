@@ -60,6 +60,19 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 
 #define MEASUREMENTS 15
 
+//RTC / DS1307
+#define DS1307_ADDR 0x68
+
+typedef struct {
+    uint8_t sec;
+    uint8_t min;
+    uint8_t hour;
+    uint8_t dayOfWeek;
+    uint8_t day;
+    uint8_t month;
+    uint8_t year;
+} rtc_time_t;
+
 //UART COMMUNICATION
 #define F_CPU 8000000UL
 #define BAUD 9600
@@ -117,19 +130,6 @@ volatile uint32_t iCrossingTime = 0;
 #define AC_VOLTAGE_CHANNEL 2
 #define AC_CURRENT_HIGH_CHANNEL 3
 
-//RTC / DS1307
-#define DS1307_ADDR 0x68
-
-typedef struct {
-    uint8_t sec;
-    uint8_t min;
-    uint8_t hour;
-    uint8_t dayOfWeek;
-    uint8_t day;
-    uint8_t month;
-    uint8_t year;
-} rtc_time_t;
-
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 void lcd_init();
@@ -145,6 +145,19 @@ void Settings();
 void TurnsRatioMenu();
 void TurnsRatioMenuDraw();
 void DrawScreen();
+
+//For I2C and RTC
+void TWI_init(void);
+uint8_t TWI_start(uint8_t address_rw);
+void TWI_stop(void);
+uint8_t TWI_write(uint8_t data);
+uint8_t TWI_read_ack(void);
+uint8_t TWI_read_nack(void);
+uint8_t bcd_to_dec(uint8_t bcd);
+uint8_t dec_to_bcd(uint8_t dec);
+uint8_t DS1307_read_time(rtc_time_t *t);
+uint8_t DS1307_set_time(const rtc_time_t *t);
+uint32_t rtc_seconds_of_day(const rtc_time_t *t);
 
 // Global variables
 u8g2_t u8g2;
@@ -222,6 +235,127 @@ volatile uint16_t ADCReading[NO_CHANNELS];
 volatile uint8_t areReadingsReady = 0;
 volatile uint8_t ADCSelectedChannel = 0;
 volatile uint8_t discardNextSample = 0;
+
+void TWI_init(void) {
+    TWSR = 0x00;      // Prescaler = 1
+    TWBR = 32;        // Approx 100kHz when F_CPU = 8MHz
+    TWCR = (1 << TWEN);
+}
+
+uint8_t TWI_start(uint8_t address_rw) {
+    TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN);
+    while (!(TWCR & (1 << TWINT))) {
+    }
+
+    uint8_t status = TWSR & 0xF8;
+    if ((status != 0x08) && (status != 0x10)) {
+        return 0;
+    }
+
+    TWDR = address_rw;
+    TWCR = (1 << TWINT) | (1 << TWEN);
+    while (!(TWCR & (1 << TWINT))) {
+    }
+
+    status = TWSR & 0xF8;
+    if ((status != 0x18) && (status != 0x40)) {
+        return 0;
+    }
+
+    return 1;
+}
+
+void TWI_stop(void) {
+    TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO);
+    _delay_us(10);
+}
+
+uint8_t TWI_write(uint8_t data) {
+    TWDR = data;
+    TWCR = (1 << TWINT) | (1 << TWEN);
+    while (!(TWCR & (1 << TWINT))) {
+    }
+
+    uint8_t status = TWSR & 0xF8;
+    return (status == 0x28);
+}
+
+uint8_t TWI_read_ack(void) {
+    TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA);
+    while (!(TWCR & (1 << TWINT))) {
+    }
+    return TWDR;
+}
+
+uint8_t TWI_read_nack(void) {
+    TWCR = (1 << TWINT) | (1 << TWEN);
+    while (!(TWCR & (1 << TWINT))) {
+    }
+    return TWDR;
+}
+
+uint8_t bcd_to_dec(uint8_t bcd) {
+    return ((bcd >> 4) * 10) + (bcd & 0x0F);
+}
+
+uint8_t dec_to_bcd(uint8_t dec) {
+    return ((dec / 10) << 4) | (dec % 10);
+}
+
+uint8_t DS1307_read_time(rtc_time_t *t) {
+    if (!TWI_start((DS1307_ADDR << 1) | 0)) {
+        return 0;
+    }
+
+    if (!TWI_write(0x00)) {
+        TWI_stop();
+        return 0;
+    }
+
+    if (!TWI_start((DS1307_ADDR << 1) | 1)) {
+        TWI_stop();
+        return 0;
+    }
+
+    t->sec       = bcd_to_dec(TWI_read_ack() & 0x7F);
+    t->min       = bcd_to_dec(TWI_read_ack());
+    t->hour      = bcd_to_dec(TWI_read_ack() & 0x3F);
+    t->dayOfWeek = bcd_to_dec(TWI_read_ack());
+    t->day       = bcd_to_dec(TWI_read_ack());
+    t->month     = bcd_to_dec(TWI_read_ack());
+    t->year      = bcd_to_dec(TWI_read_nack());
+
+    TWI_stop();
+    return 1;
+}
+
+uint8_t DS1307_set_time(const rtc_time_t *t) {
+    if (!TWI_start((DS1307_ADDR << 1) | 0)) {
+        return 0;
+    }
+
+    if (!TWI_write(0x00)) {
+        TWI_stop();
+        return 0;
+    }
+
+    if (!TWI_write(dec_to_bcd(t->sec)))       { TWI_stop(); return 0; }
+    if (!TWI_write(dec_to_bcd(t->min)))       { TWI_stop(); return 0; }
+    if (!TWI_write(dec_to_bcd(t->hour)))      { TWI_stop(); return 0; }
+    if (!TWI_write(dec_to_bcd(t->dayOfWeek))) { TWI_stop(); return 0; }
+    if (!TWI_write(dec_to_bcd(t->day)))       { TWI_stop(); return 0; }
+    if (!TWI_write(dec_to_bcd(t->month)))     { TWI_stop(); return 0; }
+    if (!TWI_write(dec_to_bcd(t->year)))      { TWI_stop(); return 0; }
+
+    TWI_stop();
+    return 1;
+}
+
+uint32_t rtc_seconds_of_day(const rtc_time_t *t) {
+    return ((uint32_t)t->hour * 3600UL) +
+           ((uint32_t)t->min * 60UL) +
+           (uint32_t)t->sec;
+}
 
 void UART_init(void) {
 	UBRR0H = (unsigned char)(UBRR_VALUE >> 8);
@@ -1135,12 +1269,12 @@ int main(void) {
             measurements[MEAS_DC_VOLTAGE] = calculate_DC_voltage(localDCVoltageADC);
 
             measurements[MEAS_DC_CURRENT] = calculate_DC_current(localDCCurrentADC);
-
-//			//Save RTC time as seconds since midnight
-//            rtc_time_t rtc;
-//            if (DS1307_read_time(&rtc)) {
-//                measurements[MEAS_RTC_TIME] = (float)rtc_seconds_of_day(&rtc);
-//            }
+            
+			//Save RTC time as seconds since midnight
+            rtc_time_t rtc;
+            if (DS1307_read_time(&rtc)) {
+                measurements[MEAS_RTC_TIME] = (float)rtc_seconds_of_day(&rtc);
+            }
             
             //print full measurement array for communication to gui
             UART_print_measurements(measurements);
