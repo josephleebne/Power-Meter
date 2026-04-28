@@ -7,7 +7,6 @@ from tkinter import ttk
 
 import matplotlib
 matplotlib.use("TkAgg")
-
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
@@ -15,13 +14,12 @@ import serial
 import serial.tools.list_ports
 
 BAUD_RATE = 9600
+SERIAL_TIMEOUT_S = 0.1
 WINDOW_TITLE = "ENGG2800 Power Meter"
 WINDOW_GEOMETRY = "1380x820"
-
 MIN_TIME_RANGE_S = 10
 MAX_TIME_RANGE_S = 3600
 DEFAULT_TIME_RANGE_S = 60
-
 PLACEHOLDER_VALUE = 4.2
 PLACEHOLDER_TOL = 0.0001
 
@@ -35,22 +33,7 @@ COLOR_ORANGE = "#ef6c00"
 COLOR_RED = "#c62828"
 
 # AVR array format:
-# [0 DC Voltage,
-#  1 DC Current,
-#  2 AC Voltage RMS,
-#  3 AC Current High RMS,
-#  4 AC Current Low RMS,
-#  5 AC Voltage Vpp,
-#  6 AC Current High Vpp,
-#  7 AC Current Low Vpp,
-#  8 Phase Difference,
-#  9 Power Factor,
-# 10 Frequency,
-# 11 DC Power,
-# 12 AC Real Power,
-# 13 AC Reactive Power,
-# 14 AC Apparent Power,
-# 15 RTC Time]
+# [0 DC Voltage, # 1 DC Current, # 2 AC Voltage RMS, # 3 AC Current High RMS, # 4 AC Current Low RMS, # 5 AC Voltage Vpp, # 6 AC Current High Vpp, # 7 AC Current Low Vpp, # 8 Phase Difference, # 9 Power Factor, # 10 Frequency, # 11 DC Power, # 12 AC Real Power, # 13 AC Reactive Power, # 14 AC Apparent Power, # 15 RTC Time]
 
 DISPLAY_MEASUREMENTS = [
     ("DC Voltage (V)", 0, "{:.2f}"),
@@ -70,8 +53,6 @@ DISPLAY_MEASUREMENTS = [
 
 MEASUREMENTS = [m[0] for m in DISPLAY_MEASUREMENTS]
 
-# DS1307 RTC Address
-DS1307_ADDR = 0x68
 
 class SerialManager:
     def __init__(self):
@@ -79,33 +60,69 @@ class SerialManager:
         self.thread = None
         self.running = False
         self.queue = queue.Queue()
+        self.lock = threading.Lock()
 
     def connect(self, port: str):
-        self.ser = serial.Serial(port, BAUD_RATE, timeout=0.2)
-        self.running = True
-        self.thread = threading.Thread(target=self._reader, daemon=True)
-        self.thread.start()
+        with self.lock:
+            if self.ser and self.ser.is_open:
+                raise RuntimeError("Serial port is already connected")
+
+            self.ser = serial.Serial(port, BAUD_RATE, timeout=SERIAL_TIMEOUT_S)
+            self.running = True
+            self.thread = threading.Thread(target=self._reader, daemon=True)
+            self.thread.start()
 
     def disconnect(self):
-        self.running = False
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1.0)
-        if self.ser and self.ser.is_open:
-            self.ser.close()
-        self.ser = None
+        """
+        This method may take a short time because the reader thread may be inside readline().
+        Call it from a background thread, not directly from the Tkinter GUI thread.
+        """
+        with self.lock:
+            self.running = False
+            ser = self.ser
+            thread = self.thread
+
+        try:
+            if ser and ser.is_open:
+                ser.close()
+        except Exception:
+            pass
+
+        if thread and thread.is_alive():
+            thread.join(timeout=0.2)
+
+        with self.lock:
+            self.ser = None
+            self.thread = None
+            self.running = False
+
+    def is_connected(self):
+        with self.lock:
+            return self.ser is not None and self.ser.is_open
 
     def _reader(self):
-        while self.running and self.ser and self.ser.is_open:
+        while True:
+            with self.lock:
+                running = self.running
+                ser = self.ser
+
+            if not running or ser is None or not ser.is_open:
+                break
+
             try:
-                raw = self.ser.readline()
+                raw = ser.readline()
                 if not raw:
                     continue
                 line = raw.decode("utf-8", errors="replace").strip()
                 if line:
                     self.queue.put(line)
             except Exception as exc:
-                self.queue.put({"type": "__error__", "msg": str(exc)})
+                with self.lock:
+                    still_running = self.running
+                if still_running:
+                    self.queue.put({"type": "__error__", "msg": str(exc)})
                 break
+
 
 class App:
     def __init__(self, root):
@@ -120,6 +137,7 @@ class App:
         self.value_labels = {}
         self.history = {name: [] for name in MEASUREMENTS}
         self.hover_annotation = None
+        self.disconnecting = False
 
         self._build_style()
         self._build_ui()
@@ -138,12 +156,14 @@ class App:
 
     def _build_ui(self):
         self.build_top_bar()
-
         body = tk.Frame(self.root, bg=COLOR_BG)
         body.pack(fill="both", expand=True, padx=10, pady=10)
-
         self.build_measurement_panel(body)
         self.build_chart_panel(body)
+
+        # 添加时间显示标签
+        self.label_time = tk.Label(body, text="Time: —", bg=COLOR_PANEL, fg=COLOR_TEXT)
+        self.label_time.pack(side="top", padx=6)
 
     def build_top_bar(self):
         frame = tk.Frame(
@@ -157,13 +177,17 @@ class App:
         frame.pack(fill="x", padx=10, pady=(10, 6))
 
         tk.Label(frame, text="Port:", bg=COLOR_PANEL, fg=COLOR_TEXT).pack(side="left")
-
         self.combo_port = ttk.Combobox(frame, width=24, state="readonly")
         self.combo_port.pack(side="left", padx=6)
 
-        tk.Button(frame, text="Refresh", command=self.refresh_ports).pack(side="left", padx=4)
-        tk.Button(frame, text="Connect", command=self.connect).pack(side="left", padx=4)
-        tk.Button(frame, text="Disconnect", command=self.disconnect).pack(side="left", padx=4)
+        self.btn_refresh = tk.Button(frame, text="Refresh", command=self.refresh_ports)
+        self.btn_refresh.pack(side="left", padx=4)
+
+        self.btn_connect = tk.Button(frame, text="Connect", command=self.connect)
+        self.btn_connect.pack(side="left", padx=4)
+
+        self.btn_disconnect = tk.Button(frame, text="Disconnect", command=self.disconnect)
+        self.btn_disconnect.pack(side="left", padx=4)
 
         self.label_status = tk.Label(frame, text="Disconnected", bg=COLOR_PANEL, fg=COLOR_RED)
         self.label_status.pack(side="left", padx=14)
@@ -175,6 +199,7 @@ class App:
         self.label_rx.pack(side="right", padx=8)
 
         self.refresh_ports()
+        self._set_connected_ui(False)
 
     def build_measurement_panel(self, parent):
         frame = tk.LabelFrame(
@@ -194,7 +219,6 @@ class App:
         for name in MEASUREMENTS:
             row = tk.Frame(frame, bg=COLOR_PANEL)
             row.pack(fill="x", pady=3)
-
             tk.Label(
                 row,
                 text=name,
@@ -203,7 +227,6 @@ class App:
                 bg=COLOR_PANEL,
                 fg=COLOR_TEXT,
             ).pack(side="left")
-
             val = tk.Label(
                 row,
                 text="—",
@@ -232,7 +255,6 @@ class App:
         ctrl.pack(fill="x", pady=(0, 8))
 
         tk.Label(ctrl, text="Measurement:", bg=COLOR_PANEL, fg=COLOR_TEXT).pack(side="left")
-
         self.var_plot = tk.StringVar(value="DC Voltage (V)")
         combo = ttk.Combobox(
             ctrl,
@@ -254,14 +276,23 @@ class App:
         fig = Figure(figsize=(8.3, 5.8), facecolor=COLOR_PANEL)
         self.ax = fig.add_subplot(111)
         fig.subplots_adjust(left=0.12, right=0.97, top=0.92, bottom=0.13)
-
         self.canvas = FigureCanvasTkAgg(fig, master=frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
-
         self.canvas.mpl_connect("motion_notify_event", self.on_hover)
         self.canvas.mpl_connect("axes_leave_event", self.on_leave)
-
         self.update_plot()
+
+    def _set_connected_ui(self, connected):
+        if connected:
+            self.btn_connect.config(state="disabled")
+            self.btn_disconnect.config(state="normal")
+            self.btn_refresh.config(state="disabled")
+            self.combo_port.config(state="disabled")
+        else:
+            self.btn_connect.config(state="normal")
+            self.btn_disconnect.config(state="disabled")
+            self.btn_refresh.config(state="normal")
+            self.combo_port.config(state="readonly")
 
     def refresh_ports(self):
         ports = [p.device for p in serial.tools.list_ports.comports()]
@@ -272,6 +303,9 @@ class App:
             self.combo_port.set("No ports found")
 
     def connect(self):
+        if self.disconnecting:
+            return
+
         port = self.combo_port.get()
         if not port or port == "No ports found":
             self.set_status("No port selected", COLOR_ORANGE)
@@ -280,12 +314,30 @@ class App:
         try:
             self.serial_mgr.connect(port)
             self.set_status(f"Connected: {port}", COLOR_GREEN)
+            self._set_connected_ui(True)
         except Exception as exc:
             self.set_status(f"Connect failed: {exc}", COLOR_RED)
+            self._set_connected_ui(False)
 
     def disconnect(self):
+        if self.disconnecting:
+            return
+
+        self.disconnecting = True
+        self.set_status("Disconnecting...", COLOR_ORANGE)
+        self.btn_disconnect.config(state="disabled")
+
+        thread = threading.Thread(target=self._disconnect_worker, daemon=True)
+        thread.start()
+
+    def _disconnect_worker(self):
         self.serial_mgr.disconnect()
+        self.root.after(0, self._disconnect_finished)
+
+    def _disconnect_finished(self):
+        self.disconnecting = False
         self.set_status("Disconnected", COLOR_RED)
+        self._set_connected_ui(False)
 
     def set_status(self, text, color):
         self.label_status.config(text=text, fg=color)
@@ -297,12 +349,12 @@ class App:
                 self.handle_serial_item(item)
         except queue.Empty:
             pass
-
         self.root.after(80, self.poll_serial_queue)
 
     def handle_serial_item(self, item):
         if isinstance(item, dict) and item.get("type") == "__error__":
-            self.set_status(f"Serial error: {item['msg']}", COLOR_RED)
+            if not self.disconnecting:
+                self.set_status(f"Serial error: {item['msg']}", COLOR_RED)
             return
 
         self.label_rx.config(text=f"RX: {item[:110]}")
@@ -311,11 +363,16 @@ class App:
         if values is None:
             return
 
+        # Handle measurements
         self.handle_measurement_array(values)
+
+        # Handle RTC time
+        rtc_time = values[15] if len(values) > 15 else None
+        if not self.is_placeholder(rtc_time):
+            self.label_time.config(text=f"Time: {self.format_rtc_time(rtc_time)}")
 
     def parse_array_line(self, line):
         line = line.strip()
-
         if not (line.startswith("[") and line.endswith("]")):
             return None
 
@@ -336,11 +393,6 @@ class App:
 
         return parsed
 
-    def is_placeholder(self, value):
-        if value is None:
-            return True
-        return abs(value - PLACEHOLDER_VALUE) < PLACEHOLDER_TOL
-
     def handle_measurement_array(self, values):
         now_mono = time.monotonic()
         if self.first_sample_monotonic is None:
@@ -352,7 +404,6 @@ class App:
 
         for name, idx, fmt in DISPLAY_MEASUREMENTS:
             value = values[idx] if idx < len(values) else None
-
             if self.is_placeholder(value):
                 self.value_labels[name].config(text="—", fg=COLOR_ORANGE)
                 continue
@@ -361,6 +412,26 @@ class App:
             self.history[name].append((offset_s, value, self.sample_seq))
 
         self.update_plot()
+
+    def is_placeholder(self, value):
+        if value is None:
+            return True
+        return abs(value - PLACEHOLDER_VALUE) < PLACEHOLDER_TOL
+
+    def format_rtc_time(self, rtc_value):
+        try:
+            total_seconds = int(float(rtc_value))
+        except Exception:
+            return "—"
+
+        if total_seconds < 0:
+            return "—"
+
+        total_seconds %= 24 * 60 * 60
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
     def get_time_range(self):
         try:
@@ -414,7 +485,6 @@ class App:
             color="#000000",
             visible=False,
         )
-
         self.canvas.draw_idle()
 
     def on_hover(self, event):
@@ -423,7 +493,6 @@ class App:
 
         selected = self.var_plot.get()
         points = self.history[selected]
-
         if not points or event.xdata is None:
             self.hover_annotation.set_visible(False)
             self.canvas.draw_idle()
@@ -432,7 +501,6 @@ class App:
         t_range = self.get_time_range()
         latest = points[-1][0]
         visible = [(o, v, s) for (o, v, s) in points if latest - o <= t_range]
-
         if not visible:
             self.hover_annotation.set_visible(False)
             self.canvas.draw_idle()
@@ -440,12 +508,11 @@ class App:
 
         closest = min(visible, key=lambda p: abs(p[0] - event.xdata))
         offset_s, value, seq = closest
-
         self.hover_annotation.xy = (offset_s, value)
         self.hover_annotation.set_text(
-            f"Seq      : {seq}\n"
-            f"Offset   : {offset_s:.2f} s\n"
-            f"Value    : {value:.4g}"
+            f"Seq : {seq}\n"
+            f"Offset : {offset_s:.2f} s\n"
+            f"Value : {value:.4g}"
         )
         self.hover_annotation.set_visible(True)
         self.canvas.draw_idle()
@@ -453,7 +520,7 @@ class App:
     def on_leave(self, _event):
         if self.hover_annotation:
             self.hover_annotation.set_visible(False)
-            self.canvas.draw_idle()
+        self.canvas.draw_idle()
 
 
 def main():
