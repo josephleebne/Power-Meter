@@ -117,6 +117,19 @@ volatile uint32_t iCrossingTime = 0;
 #define AC_VOLTAGE_CHANNEL 2
 #define AC_CURRENT_HIGH_CHANNEL 3
 
+//RTC / DS1307
+#define DS1307_ADDR 0x68
+
+typedef struct {
+    uint8_t sec;
+    uint8_t min;
+    uint8_t hour;
+    uint8_t dayOfWeek;
+    uint8_t day;
+    uint8_t month;
+    uint8_t year;
+} rtc_time_t;
+
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 void lcd_init();
@@ -1046,6 +1059,7 @@ int main(void) {
 	} //Only code for DC/AC voltage and Current have been implemented!!
     
     uint32_t localPeriodTicks = 0;
+	
     
 	while(1){
 		if (acWindowReady){
@@ -1057,6 +1071,8 @@ int main(void) {
             uint32_t localACCurrentHighSumSq;
 
             uint16_t localACSampleCount;
+			uint32_t localVTime;
+			uint32_t localITime;
 
             cli();
 
@@ -1083,6 +1099,9 @@ int main(void) {
             acWindowReady = 0;
 
             localPeriodTicks = periodTicks;
+
+			localVTime = vCrossingTime;
+    		localITime = iCrossingTime;
             sei();
             
 
@@ -1096,6 +1115,10 @@ int main(void) {
                 calculate_AC_current_high_RMS(localACCurrentHighSum,
                                               localACCurrentHighSumSq,
                                               localACSampleCount);
+
+			measurements[MEAS_FREQUENCY] = calculate_frequency(localPeriodTicks);
+    		measurements[MEAS_PHASE_DIFFERENCE] = calculate_phase_difference(localVTime, localITime, localPeriodTicks);
+    		measurements[MEAS_POWER_FACTOR] = calculate_power_factor(measurements[MEAS_PHASE_DIFFERENCE]);
         }
 
         if (areReadingsReady) {
@@ -1112,11 +1135,12 @@ int main(void) {
             measurements[MEAS_DC_VOLTAGE] = calculate_DC_voltage(localDCVoltageADC);
 
             measurements[MEAS_DC_CURRENT] = calculate_DC_current(localDCCurrentADC);
-            
-            //Save frequency and related measurements
-            measurements[MEAS_FREQUENCY] = calculate_frequency(localPeriodTicks);
-            measurements[MEAS_PHASE_DIFFERENCE] = calculate_phase_difference(vCrossingTime, iCrossingTime, localPeriodTicks);
-            measurements[MEAS_POWER_FACTOR] = calculate_power_factor(measurements[MEAS_PHASE_DIFFERENCE]);
+
+//			//Save RTC time as seconds since midnight
+//            rtc_time_t rtc;
+//            if (DS1307_read_time(&rtc)) {
+//                measurements[MEAS_RTC_TIME] = (float)rtc_seconds_of_day(&rtc);
+//            }
             
             //print full measurement array for communication to gui
             UART_print_measurements(measurements);
