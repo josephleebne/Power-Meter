@@ -146,18 +146,18 @@ void TurnsRatioMenu();
 void TurnsRatioMenuDraw();
 void DrawScreen();
 
-//For I2C and RTC
-void TWI_init(void);
-uint8_t TWI_start(uint8_t address_rw);
-void TWI_stop(void);
-uint8_t TWI_write(uint8_t data);
-uint8_t TWI_read_ack(void);
-uint8_t TWI_read_nack(void);
-uint8_t bcd_to_dec(uint8_t bcd);
-uint8_t dec_to_bcd(uint8_t dec);
-uint8_t DS1307_read_time(rtc_time_t *t);
-uint8_t DS1307_set_time(const rtc_time_t *t);
-uint32_t rtc_seconds_of_day(const rtc_time_t *t);
+////For I2C and RTC
+//void TWI_init(void);
+//uint8_t TWI_start(uint8_t address_rw);
+//void TWI_stop(void);
+//uint8_t TWI_write(uint8_t data);
+//uint8_t TWI_read_ack(void);
+//uint8_t TWI_read_nack(void);
+//uint8_t bcd_to_dec(uint8_t bcd);
+//uint8_t dec_to_bcd(uint8_t dec);
+//uint8_t DS1307_read_time(rtc_time_t *t);
+//uint8_t DS1307_set_time(const rtc_time_t *t);
+//uint32_t rtc_seconds_of_day(const rtc_time_t *t);
 
 // Global variables
 u8g2_t u8g2;
@@ -236,126 +236,126 @@ volatile uint8_t areReadingsReady = 0;
 volatile uint8_t ADCSelectedChannel = 0;
 volatile uint8_t discardNextSample = 0;
 
-void TWI_init(void) {
-    TWSR = 0x00;      // Prescaler = 1
-    TWBR = 32;        // Approx 100kHz when F_CPU = 8MHz
-    TWCR = (1 << TWEN);
-}
-
-uint8_t TWI_start(uint8_t address_rw) {
-    TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN);
-    while (!(TWCR & (1 << TWINT))) {
-    }
-
-    uint8_t status = TWSR & 0xF8;
-    if ((status != 0x08) && (status != 0x10)) {
-        return 0;
-    }
-
-    TWDR = address_rw;
-    TWCR = (1 << TWINT) | (1 << TWEN);
-    while (!(TWCR & (1 << TWINT))) {
-    }
-
-    status = TWSR & 0xF8;
-    if ((status != 0x18) && (status != 0x40)) {
-        return 0;
-    }
-
-    return 1;
-}
-
-void TWI_stop(void) {
-    TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO);
-    _delay_us(10);
-}
-
-uint8_t TWI_write(uint8_t data) {
-    TWDR = data;
-    TWCR = (1 << TWINT) | (1 << TWEN);
-    while (!(TWCR & (1 << TWINT))) {
-    }
-
-    uint8_t status = TWSR & 0xF8;
-    return (status == 0x28);
-}
-
-uint8_t TWI_read_ack(void) {
-    TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA);
-    while (!(TWCR & (1 << TWINT))) {
-    }
-    return TWDR;
-}
-
-uint8_t TWI_read_nack(void) {
-    TWCR = (1 << TWINT) | (1 << TWEN);
-    while (!(TWCR & (1 << TWINT))) {
-    }
-    return TWDR;
-}
-
-uint8_t bcd_to_dec(uint8_t bcd) {
-    return ((bcd >> 4) * 10) + (bcd & 0x0F);
-}
-
-uint8_t dec_to_bcd(uint8_t dec) {
-    return ((dec / 10) << 4) | (dec % 10);
-}
-
-uint8_t DS1307_read_time(rtc_time_t *t) {
-    if (!TWI_start((DS1307_ADDR << 1) | 0)) {
-        return 0;
-    }
-
-    if (!TWI_write(0x00)) {
-        TWI_stop();
-        return 0;
-    }
-
-    if (!TWI_start((DS1307_ADDR << 1) | 1)) {
-        TWI_stop();
-        return 0;
-    }
-
-    t->sec       = bcd_to_dec(TWI_read_ack() & 0x7F);
-    t->min       = bcd_to_dec(TWI_read_ack());
-    t->hour      = bcd_to_dec(TWI_read_ack() & 0x3F);
-    t->dayOfWeek = bcd_to_dec(TWI_read_ack());
-    t->day       = bcd_to_dec(TWI_read_ack());
-    t->month     = bcd_to_dec(TWI_read_ack());
-    t->year      = bcd_to_dec(TWI_read_nack());
-
-    TWI_stop();
-    return 1;
-}
-
-uint8_t DS1307_set_time(const rtc_time_t *t) {
-    if (!TWI_start((DS1307_ADDR << 1) | 0)) {
-        return 0;
-    }
-
-    if (!TWI_write(0x00)) {
-        TWI_stop();
-        return 0;
-    }
-
-    if (!TWI_write(dec_to_bcd(t->sec)))       { TWI_stop(); return 0; }
-    if (!TWI_write(dec_to_bcd(t->min)))       { TWI_stop(); return 0; }
-    if (!TWI_write(dec_to_bcd(t->hour)))      { TWI_stop(); return 0; }
-    if (!TWI_write(dec_to_bcd(t->dayOfWeek))) { TWI_stop(); return 0; }
-    if (!TWI_write(dec_to_bcd(t->day)))       { TWI_stop(); return 0; }
-    if (!TWI_write(dec_to_bcd(t->month)))     { TWI_stop(); return 0; }
-    if (!TWI_write(dec_to_bcd(t->year)))      { TWI_stop(); return 0; }
-
-    TWI_stop();
-    return 1;
-}
-
-uint32_t rtc_seconds_of_day(const rtc_time_t *t) {
-    return ((uint32_t)t->hour * 3600UL) +
-           ((uint32_t)t->min * 60UL) +
-           (uint32_t)t->sec;
-}
+//void TWI_init(void) {
+//    TWSR = 0x00;      // Prescaler = 1
+//    TWBR = 32;        // Approx 100kHz when F_CPU = 8MHz
+//    TWCR = (1 << TWEN);
+//}
+//
+//uint8_t TWI_start(uint8_t address_rw) {
+//    TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN);
+//    while (!(TWCR & (1 << TWINT))) {
+//    }
+//
+//    uint8_t status = TWSR & 0xF8;
+//    if ((status != 0x08) && (status != 0x10)) {
+//        return 0;
+//    }
+//
+//    TWDR = address_rw;
+//    TWCR = (1 << TWINT) | (1 << TWEN);
+//    while (!(TWCR & (1 << TWINT))) {
+//    }
+//
+//    status = TWSR & 0xF8;
+//    if ((status != 0x18) && (status != 0x40)) {
+//        return 0;
+//    }
+//
+//    return 1;
+//}
+//
+//void TWI_stop(void) {
+//    TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO);
+//    _delay_us(10);
+//}
+//
+//uint8_t TWI_write(uint8_t data) {
+//    TWDR = data;
+//    TWCR = (1 << TWINT) | (1 << TWEN);
+//    while (!(TWCR & (1 << TWINT))) {
+//    }
+//
+//    uint8_t status = TWSR & 0xF8;
+//    return (status == 0x28);
+//}
+//
+//uint8_t TWI_read_ack(void) {
+//    TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA);
+//    while (!(TWCR & (1 << TWINT))) {
+//    }
+//    return TWDR;
+//}
+//
+//uint8_t TWI_read_nack(void) {
+//    TWCR = (1 << TWINT) | (1 << TWEN);
+//    while (!(TWCR & (1 << TWINT))) {
+//    }
+//    return TWDR;
+//}
+//
+//uint8_t bcd_to_dec(uint8_t bcd) {
+//    return ((bcd >> 4) * 10) + (bcd & 0x0F);
+//}
+//
+//uint8_t dec_to_bcd(uint8_t dec) {
+//    return ((dec / 10) << 4) | (dec % 10);
+//}
+//
+//uint8_t DS1307_read_time(rtc_time_t *t) {
+//    if (!TWI_start((DS1307_ADDR << 1) | 0)) {
+//        return 0;
+//    }
+//
+//    if (!TWI_write(0x00)) {
+//        TWI_stop();
+//        return 0;
+//    }
+//
+//    if (!TWI_start((DS1307_ADDR << 1) | 1)) {
+//        TWI_stop();
+//        return 0;
+//    }
+//
+//    t->sec       = bcd_to_dec(TWI_read_ack() & 0x7F);
+//    t->min       = bcd_to_dec(TWI_read_ack());
+//    t->hour      = bcd_to_dec(TWI_read_ack() & 0x3F);
+//    t->dayOfWeek = bcd_to_dec(TWI_read_ack());
+//    t->day       = bcd_to_dec(TWI_read_ack());
+//    t->month     = bcd_to_dec(TWI_read_ack());
+//    t->year      = bcd_to_dec(TWI_read_nack());
+//
+//    TWI_stop();
+//    return 1;
+//}
+//
+//uint8_t DS1307_set_time(const rtc_time_t *t) {
+//    if (!TWI_start((DS1307_ADDR << 1) | 0)) {
+//        return 0;
+//    }
+//
+//    if (!TWI_write(0x00)) {
+//        TWI_stop();
+//        return 0;
+//    }
+//
+//    if (!TWI_write(dec_to_bcd(t->sec)))       { TWI_stop(); return 0; }
+//    if (!TWI_write(dec_to_bcd(t->min)))       { TWI_stop(); return 0; }
+//    if (!TWI_write(dec_to_bcd(t->hour)))      { TWI_stop(); return 0; }
+//    if (!TWI_write(dec_to_bcd(t->dayOfWeek))) { TWI_stop(); return 0; }
+//    if (!TWI_write(dec_to_bcd(t->day)))       { TWI_stop(); return 0; }
+//    if (!TWI_write(dec_to_bcd(t->month)))     { TWI_stop(); return 0; }
+//    if (!TWI_write(dec_to_bcd(t->year)))      { TWI_stop(); return 0; }
+//
+//    TWI_stop();
+//    return 1;
+//}
+//
+//uint32_t rtc_seconds_of_day(const rtc_time_t *t) {
+//    return ((uint32_t)t->hour * 3600UL) +
+//           ((uint32_t)t->min * 60UL) +
+//           (uint32_t)t->sec;
+//}
 
 void UART_init(void) {
 	UBRR0H = (unsigned char)(UBRR_VALUE >> 8);
@@ -532,8 +532,8 @@ ISR(ADC_vect) {
 float calculate_DC_voltage(uint16_t ADCreading) {
 	
 	float scalingRatio =  (4.724f / 10.0f);
-	float errorRatio = 1.517f;
-    float errorSum = -0.084f;
+	float errorRatio = 1.681f;
+    float errorSum = 0.080f;
 	
 	//Set convert ADC reading into voltage
 	float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
@@ -547,8 +547,8 @@ float calculate_DC_voltage(uint16_t ADCreading) {
 float calculate_DC_current(uint16_t ADCreading) {
 	
 	float scalingRatio = 1.0f;
-	float errorRatio = 0.445f;
-    float errorSum = -0.114f;
+	float errorRatio = 1.954f;
+    float errorSum = 0.023f;
 	
 	//Set convert ADC reading into voltage
 	float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
@@ -583,8 +583,8 @@ float ADC_counts_to_volts(float ADCCounts) {
 
 float calculate_AC_voltage_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
 	float scalingRatio = (1.4f / 14.14f);
-	float errorRatio = 1.138f;
-    float errorSum = -0.113f;
+	float errorRatio = 0.649f;
+    float errorSum = -0.004f;
 
 	float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
 	float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
@@ -597,8 +597,8 @@ float calculate_AC_voltage_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
 float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
 	float scalingRatio = 1.0f;
 	float currentToVoltageRatio = 10.0f;
-	float errorRatio = 1.552f;
-    float errorSum = -1.180f;
+	float errorRatio = 0.866f;
+    float errorSum = -0.096f;
 
 	float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
 	float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
@@ -782,7 +782,7 @@ void eepromUpdate(unsigned int address, float data) {
 
 // Define An Interrupt Handler for TIMER1_COMPA Interrupt (Nesting Disabled)
 ISR(TIMER1_COMPA_vect) {
-    LcdTick = 1;     // signal "tick" event
+    //LcdTick = 1;     // signal "tick" event
 }
 
 void lcd_init(void){
@@ -815,8 +815,8 @@ void init(){
     // Set output port for LCD backlight
 	DDRD |= (1<<5);
 	
-	TCCR0A |= (1 << WGM01) | (1 << WGM00) | (1 << COM0B1); // set fast PWM Mode and non-inverting mode
-	TCCR0B |= (1 << CS01);  // set prescaler to 8
+	//TCCR0A |= (1 << WGM01) | (1 << WGM00) | (1 << COM0B1); // set fast PWM Mode and non-inverting mode
+	//TCCR0B |= (1 << CS01);  // set prescaler to 8
     
     // Set up Timer/Counter1
     TCCR1B |= (1 << WGM12);   // Configure timer 1 for CTC mode
@@ -835,7 +835,7 @@ void init(){
                 MenuSettings[i] = eepromRead(MenuSettingsEEPROMAddresses[i]); // Read values from addresses if values are already stored there.
             }
 		}
-        OCR0B = 0;
+        //OCR0B = 0;
     } else {
         for (int i = 0; i < 6; i++){ // Write initial values to menu setting addresses
 			if (i == 4) {
@@ -844,7 +844,7 @@ void init(){
 				eepromUpdate(i, 1);
 			}
 		}
-        OCR0B = Backlight[4];
+        //OCR0B = Backlight[4];
     }
 	//OCR0B = Backlight[4]; // Set Backlight
 	//OCR0B = Backlight[(int)eeprom_read_float((float*)BACKLIGHT_ADDRESS)]; // Set Backlight
@@ -1271,10 +1271,10 @@ int main(void) {
             measurements[MEAS_DC_CURRENT] = calculate_DC_current(localDCCurrentADC);
             
 			//Save RTC time as seconds since midnight
-            rtc_time_t rtc;
-            if (DS1307_read_time(&rtc)) {
-                measurements[MEAS_RTC_TIME] = (float)rtc_seconds_of_day(&rtc);
-            }
+//            rtc_time_t rtc;
+//            if (DS1307_read_time(&rtc)) {
+//                measurements[MEAS_RTC_TIME] = (float)rtc_seconds_of_day(&rtc);
+//            }
             
             //print full measurement array for communication to gui
             UART_print_measurements(measurements);
