@@ -880,7 +880,8 @@ void MainScreenDraw(float measurements[]) {
 		if (i<4) {
 			u8g2_DrawStr(&u8g2, 1, 10 + (i * 13), MeasurementName[(int)MenuSettings[i]]); // MenuSettings stores the index for which measurement it is
             char Measurement[10];
-            sprintf(Measurement , "%.2f", measurements[(int)MenuSettings[i]]); // Convert Measurement float value to string
+			int measurement = measurements[(int)MenuSettings[i]];
+            sprintf(Measurement , "%d.%d", measurement, (int)round(((measurements[(int)MenuSettings[i]])-measurement)*100)); // Convert Measurement float value to string
             u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), Measurement); // Each row is 9 high with 2 space in between
 		} else {
 			u8g2_DrawStr(&u8g2, 1, 61, "Settings");
