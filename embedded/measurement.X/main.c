@@ -20,7 +20,6 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 #include <avr/interrupt.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <avr/io.h>
 
 #define DISPLAY_CLK_DIR DDRB
 #define DISPLAY_CLK_PORT PORTB
@@ -74,7 +73,6 @@ typedef struct {
 } rtc_time_t;
 
 //UART COMMUNICATION
-#define F_CPU 8000000UL
 #define BAUD 9600
 #define UBRR_VALUE ((F_CPU / (16UL * BAUD)) - 1)
 
@@ -99,29 +97,25 @@ typedef struct {
 #define MEAS_AC_APPARANT_POWER 14
 #define MEAS_RTC_TIME 15
 
-//For timing and frequency
 #define HYSTERESIS 0.5f
-volatile uint32_t timer2Overflows = 0;
-volatile uint8_t  timer2Flag = 0;
-volatile uint32_t periodTicks = 0;
-volatile uint32_t totalPeriodAccumulator = 0; 
-volatile uint8_t  cycleCounter = 0;
-
 #define FREQ_AVG_COUNT 10
-#define T2_PRESCALER 1024UL
-// This calculates the tick rate of the timer
-#define T2_TICK_FREQ ((float)F_CPU / (float)T2_PRESCALER)
-// This creates the numerator for the final calculation
-#define FREQ_CALC_CONSTANT (T2_TICK_FREQ * (float)FREQ_AVG_COUNT)
+#define T1_TICK_FREQ 1000000UL
+#define FREQ_CALC_CONSTANT (T1_TICK_FREQ * (uint32_t)FREQ_AVG_COUNT)
 
-// Zero-crossing state
-static uint16_t lastACValue = 512;
-static uint16_t lastACCurrentValue = 512;
-static uint32_t lastCrossingTime = 0;
+volatile uint32_t timer2Overflows = 0;
+volatile uint8_t timer2Flag = 0;
+volatile uint8_t LcdTick = 0;
 
-// Phase timestamps
-volatile uint32_t vCrossingTime = 0;
-volatile uint32_t iCrossingTime = 0;
+volatile uint32_t periodTicks = 0;
+volatile uint32_t totalPeriodAccumulator = 0;
+volatile uint8_t cycleCounter = 0;
+
+volatile uint16_t lastACValue = 512;
+volatile uint16_t lastACCurrentValue = 512;
+
+volatile uint16_t lastVTimestamp = 0;
+volatile uint16_t vCrossingTime = 0;
+volatile uint16_t iCrossingTime = 0;
 
 //CHANNELS: the actual readings from the circuit
 #define NO_CHANNELS 4
@@ -205,7 +199,6 @@ int ButtonTurn = 1; // Button turn baton
 int Backlight[] = {0, 64, 128, 192, 255}; // Values for OCR0B for Backlight
 int BacklightIndexCopy; // Copy of Backlight Index
 float TurnsRatioCopy; // Copy of Transformer Turns Ratio
-int LcdTick; // Tick to indicate screen refresh
 
 //GLOBAL VARIABLES
 //STORED VARAIBLES FOR RMS MEASUREMENT
@@ -400,24 +393,18 @@ void UART_print_float_2dp(float value) {
 }
 
 //OCR2A triggers approx every 30ms
-void setup_timer2(void){
-	
-	//CTC mode
-	TCCR2A = (1 << WGM21);
-	
-	//Set output compare value
-	OCR2A = 255;
-	
-	// /1024 prescalar
-	TCCR2B |= (1 << CS22) | (1 << CS21) | (1 << CS20);
-	
-	//Enable interrupts
-	TIMSK2 |= (1 << OCIE2A);
-}
-
-ISR(TIMER2_COMPA_vect) {
-    timer2Flag = 1;
-    timer2Overflows++;
+void setup_timer1_freerun(void) {
+    // Mode 0: Normal (Timer counts 0 to 65535 and wraps)
+    TCCR1A = 0; 
+    
+    // Prescaler /8
+    // At 8MHz, this means 1 tick = 1 microsecond.
+    // The timer wraps every 65,536 microseconds (~65.5ms)
+    // This is perfect for 50Hz (20ms) or 60Hz (16.6ms) signals.
+    TCCR1B = (1 << CS11); 
+    
+    // We do NOT enable interrupts (TIMSK1) because we will 
+    // simply "poll" the TCNT1 value manually in the ADC ISR.
 }
 
 void setup_ADC(void) {
@@ -440,11 +427,10 @@ void ADC_select_channel(uint8_t channel) {
 
 }
 
-//Save the ADC reading, switch channels, and start another conversion
-//Save the ADC reading, switch channels, and start another conversion
+// Save the ADC reading, switch channels, and start another conversion
 ISR(ADC_vect) {
 
-    uint16_t channel = ADCSelectedChannel;
+    uint8_t channel = ADCSelectedChannel;
     uint16_t reading = ADC;
 
     if (discardNextSample) {
@@ -457,17 +443,20 @@ ISR(ADC_vect) {
     //Save ADC reading to array
     ADCReading[channel] = reading;
 
-    // --- FREQUENCY AND PHASE DETECTION ---
+    //FREQUENCY AND PHASE-
     uint16_t midPoint = 512; 
     
     if (channel == AC_VOLTAGE_CHANNEL) {
         // Detect Positive-going Zero Crossing for Voltage
         if (lastACValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS)) {
-            uint32_t currentTime = ((uint32_t)timer2Overflows * 256) + TCNT2;
-            uint32_t duration = currentTime - lastCrossingTime;
-            lastCrossingTime = currentTime;
+            // HIGH PRECISION TIMESTAMP (Timer1 is free-running at 1MHz)
+            uint16_t currentTime = TCNT1; 
             
-            vCrossingTime = currentTime; // For phase difference
+            // Calculate duration (handles 16-bit wrap-around automatically)
+            uint16_t duration = currentTime - lastVTimestamp;
+            lastVTimestamp = currentTime;
+            
+            vCrossingTime = currentTime; // For phase difference calculations
 
             totalPeriodAccumulator += duration;
             cycleCounter++;
@@ -484,7 +473,8 @@ ISR(ADC_vect) {
     if (channel == AC_CURRENT_HIGH_CHANNEL) {
         // Detect Positive-going Zero Crossing for Current
         if (lastACCurrentValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS)) {
-            iCrossingTime = ((uint32_t)timer2Overflows * 256) + TCNT2;
+            // Grab TCNT1 for precise phase offset relative to Voltage
+            iCrossingTime = TCNT1;
         }
         lastACCurrentValue = reading;
     }
@@ -516,7 +506,7 @@ ISR(ADC_vect) {
         }
     }
 
-    //Change channel, and wrap back around to channel 0 if we've done all 5
+    //Change channel, and wrap back around to channel 0 if we've done all 4
     ADCSelectedChannel++;
     if (ADCSelectedChannel >= NO_CHANNELS){
         ADCSelectedChannel = 0;
@@ -608,31 +598,25 @@ float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count
 }
 
 float calculate_frequency(uint32_t ticks) {
-    //Prevent division by zero
-    if (ticks == 0) {
-        return 0.0f;
-    }
-
-    //Formula: (Tick Frequency * Average Count) / Total Elapsed Ticks
-    float freq = (float)FREQ_CALC_CONSTANT / (float)ticks;
-
-    return freq;
+    if (ticks == 0) return 0.0f;
+    // (1,000,000 ticks/sec * 10 cycles) / total ticks for 10 cycles
+    return (float)FREQ_CALC_CONSTANT / (float)ticks;
 }
 
-float calculate_phase_difference(uint32_t vTime, uint32_t iTime, uint32_t avgPeriodTicks) {
+float calculate_phase_difference(uint16_t vTime, uint16_t iTime, uint32_t avgPeriodTicks) {
     if (avgPeriodTicks == 0) return 0.0f;
 
     // Get the period of a single cycle from the averaged total
     float singleCycleTicks = (float)avgPeriodTicks / (float)FREQ_AVG_COUNT;
     
-    // Calculate raw difference
-    int32_t diff = (int32_t)iTime - (int32_t)vTime;
+    // Calculate raw difference (time between V-crossing and I-crossing)
+    // Result is in microseconds (ticks)
+    int16_t diff = (int16_t)(iTime - vTime);
 
-    // Correct for the multiplexer delay (approx 2 ADC cycles + code)
-    float correctedDiff = (float)diff; 
+    // Convert time difference to degrees
+    float phase = ((float)diff / singleCycleTicks) * 360.0f;
 
-    // Normalize to +/- 180 degrees
-    float phase = (correctedDiff / singleCycleTicks) * 360.0f;
+    // Normalize to -180 to 180 degrees
     while (phase > 180.0f) phase -= 360.0f;
     while (phase < -180.0f) phase += 360.0f;
 
@@ -780,9 +764,26 @@ void eepromUpdate(unsigned int address, float data) {
     }
 }
 
-// Define An Interrupt Handler for TIMER1_COMPA Interrupt (Nesting Disabled)
-ISR(TIMER1_COMPA_vect) {
-    //LcdTick = 1;     // signal "tick" event
+void setup_timer2(void) {
+    // CTC Mode
+    TCCR2A = (1 << WGM21);
+    
+    // Set for ~32ms interval at 8MHz
+    // 8,000,000 / 1024 (prescaler) / 250 (OCR2A) = 31.25 Hz
+    OCR2A = 249; 
+    
+    // /1024 prescaler
+    TCCR2B = (1 << CS22) | (1 << CS21) | (1 << CS20);
+    
+    // Enable interrupt
+    TIMSK2 |= (1 << OCIE2A);
+}
+
+// 2. Update the Timer2 ISR
+ISR(TIMER2_COMPA_vect) {
+    timer2Flag = 1;      // Used for your internal timing logic
+    timer2Overflows++;   // Used for your current timestamping
+    LcdTick = 1;         // Now the LCD refreshes from here!
 }
 
 void lcd_init(void){
@@ -815,14 +816,17 @@ void init(){
     // Set output port for LCD backlight
 	DDRD |= (1<<5);
 	
-	//TCCR0A |= (1 << WGM01) | (1 << WGM00) | (1 << COM0B1); // set fast PWM Mode and non-inverting mode
-	//TCCR0B |= (1 << CS01);  // set prescaler to 8
-    
-    // Set up Timer/Counter1
-    TCCR1B |= (1 << WGM12);   // Configure timer 1 for CTC mode
-    OCR1A = (uint16_t)(1000000 / 4);     // Set CTC compare value for 8MHz AVR clock , with a prescaler of 8 (1000000 is 1 second)
-    TIMSK1 |= (1 << OCIE1A);  // Enable CTC interrupt
-    TCCR1B |= (1 << CS11); // Start Timer/Counter1 at F_CPU/8
+	TCCR0A |= (1 << WGM01) | (1 << WGM00) | (1 << COM0B1); // set fast PWM Mode and non-inverting mode
+	TCCR0B |= (1 << CS01);  // set prescaler to 8
+    setup_timer1_freerun();
+	setup_timer2();
+	setup_ADC();
+	
+    // // Set up Timer/Counter1
+    // TCCR1B |= (1 << WGM12);   // Configure timer 1 for CTC mode
+    // OCR1A = (uint16_t)(1000000 / 4);     // Set CTC compare value for 8MHz AVR clock , with a prescaler of 8 (1000000 is 1 second)
+    // TIMSK1 |= (1 << OCIE1A);  // Enable CTC interrupt
+    // TCCR1B |= (1 << CS11); // Start Timer/Counter1 at F_CPU/8
 
     // Enable global interrupts 
     sei();
@@ -1176,9 +1180,7 @@ int main(void) {
     init();
 	
 	UART_init();
-	setup_ADC();
-	setup_timer2();
-
+    
 	ADC_select_channel(DC_VOLTAGE_CHANNEL);
 
 	sei();
@@ -1206,8 +1208,8 @@ int main(void) {
             uint32_t localACCurrentHighSumSq;
 
             uint16_t localACSampleCount;
-			uint32_t localVTime;
-			uint32_t localITime;
+			uint16_t localVTime;
+			uint16_t localITime;
 
             cli();
 
