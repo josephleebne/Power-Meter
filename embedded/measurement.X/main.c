@@ -124,6 +124,9 @@ volatile uint16_t iCrossingTime = 0;
 #define AC_VOLTAGE_CHANNEL 2
 #define AC_CURRENT_HIGH_CHANNEL 3
 
+//Turns ratio
+float turnsRatio = 26.788;
+
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 void lcd_init();
