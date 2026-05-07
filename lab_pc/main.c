@@ -139,7 +139,7 @@ void lcd_init();
 void init();
 void DrawPCIcon();
 void DrawTime();
-void MainScreenDraw(float* measurements);
+void MainScreenDraw(float* measurements);//LCD code slightly changed by joe
 void MainScreen(float* measurements);
 void MeasurementSelectDraw(void);
 void MeasurementSelect();
@@ -528,6 +528,7 @@ void UART_init(void) {
 }
 
 void UART_transmit(char data) {
+    //THIS IS BLOCKING
 	while (!(UCSR0A & (1 << UDRE0))) {
 	}
 	UDR0 = data;
@@ -569,48 +570,58 @@ void UART_print_float_2dp(float value) {
 }
 
 //OCR2A triggers approx every 30ms
-void setup_timer1_freerun(void) {
-    TCCR1A = 0;
+void setup_timer1_freerun(void) {// Mode 0: Normal (Timer counts 0 to 65535 and wraps)
+    TCCR1A = 0;// Prescaler /8
+    // At 8MHz, this means 1 tick = 1 microsecond.
+    // The timer wraps every 65,536 microseconds (~65.5ms)
+    // This is perfect for 50Hz (20ms) or 60Hz (16.6ms) signals.
     TCCR1B = (1 << CS11);
+     // We do NOT enable interrupts (TIMSK1) because we will 
+    // simply "poll" the TCNT1 value manually in the ADC ISR.
 }
 
 void setup_ADC(void) {
+    //Set voltage reference to AREF and use 10 bit results.
 	ADMUX = (0 << REFS1) | (0 << REFS0) | (0 << ADLAR);
+    //Enable interrupts. Set prescalar divisor to 64
 	ADCSRA = (1 << ADPS2) | (1 << ADPS1) | (1 << ADEN) | (1 << ADIE);
 }
 
 void ADC_start_conversion(void) {
 	ADCSRA |= (1 << ADSC);
 }
-
+//Takes in a number from 0 to 4, corresponding to an ADC Channel
 void ADC_select_channel(uint8_t channel) {
-	channel &= 0x0F;
-	ADMUX &= ~((1 << MUX3) | (1 << MUX2) | (1 << MUX1) | (1 << MUX0));
+	channel &= 0x0F;//Look at lowest 4 bits
+	ADMUX &= ~((1 << MUX3) | (1 << MUX2) | (1 << MUX1) | (1 << MUX0));//Clear channel
 	ADMUX |= channel;
 }
-
+// Save the ADC reading, switch channels, and start another conversion
 ISR(ADC_vect) {
 
     uint8_t channel = ADCSelectedChannel;
     uint16_t reading = ADC;
 
     if (discardNextSample) {
+        //Discard the first sample after switching channels
         discardNextSample = 0;
         ADC_start_conversion();
         return;
     }
-
+    //Save ADC reading to array
     ADCReading[channel] = reading;
-
+    //FREQUENCY AND PHASE-
     uint16_t midPoint = 512;
 
     if (channel == AC_VOLTAGE_CHANNEL) {
-        if (lastACValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS)) {
+        // Detect Positive-going Zero Crossing for Voltage
+        if (lastACValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS)) {// HIGH PRECISION TIMESTAMP (Timer1 is free-running at 1MHz)
             uint16_t currentTime = TCNT1;
+            // Calculate duration (handles 16-bit wrap-around automatically)
             uint16_t duration = currentTime - lastVTimestamp;
             lastVTimestamp = currentTime;
 
-            vCrossingTime = currentTime;
+            vCrossingTime = currentTime;// For phase difference calculations
 
             totalPeriodAccumulator += duration;
             cycleCounter++;
@@ -625,24 +636,28 @@ ISR(ADC_vect) {
     }
 
     if (channel == AC_CURRENT_HIGH_CHANNEL) {
+          // Detect Positive-going Zero Crossing for Current
         if (lastACCurrentValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS)) {
+            // Grab TCNT1 for precise phase offset relative to Voltage
             iCrossingTime = TCNT1;
         }
         lastACCurrentValue = reading;
     }
-
+    //AC Voltage measurement
     if (channel == AC_VOLTAGE_CHANNEL && !acWindowReady) {
+        //For RMS measurement
         acVoltageSum += reading;
         acVoltageSumSq += (uint32_t)reading * (uint32_t)reading;
-
+        //For pk measurement, will probably remove later
         if (reading < acVoltageMin) acVoltageMin = reading;
         if (reading > acVoltageMax) acVoltageMax = reading;
     }
-
+    //AC Current (High) measurement
     if (channel == AC_CURRENT_HIGH_CHANNEL && !acWindowReady) {
+        //For RMS measurement
         acCurrentHighSum += reading;
         acCurrentHighSumSq += (uint32_t)reading * (uint32_t)reading;
-
+        //For pk measurement, will probably remove later
         if (reading < acCurrentHighMin) acCurrentHighMin = reading;
         if (reading > acCurrentHighMax) acCurrentHighMax = reading;
 
@@ -651,7 +666,7 @@ ISR(ADC_vect) {
             acWindowReady = 1;
         }
     }
-
+    //Change channel, and wrap back around to channel 0 if we've done all 4
     ADCSelectedChannel++;
     if (ADCSelectedChannel >= NO_CHANNELS){
         ADCSelectedChannel = 0;
@@ -662,26 +677,25 @@ ISR(ADC_vect) {
     discardNextSample = 1;
     ADC_start_conversion();
 }
-
+//Converts the ADC reading into DC voltage, then calculates input DC voltage
 float calculate_DC_voltage(uint16_t ADCreading) {
-
 	float scalingRatio =  (4.724f / 10.0f);
 	float errorRatio = 1.681f;
     float errorSum = 0.080f;
-
+    //Set convert ADC reading into voltage
 	float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
 
 	float vin = (scaledVout / scalingRatio);
     float vinCorrected = vin * errorRatio + errorSum;
 	return vinCorrected;
 }
-
+//Converts the ADC reading into DC current, then calculates input DC current
 float calculate_DC_current(uint16_t ADCreading) {
 
 	float scalingRatio = 1.0f;
 	float errorRatio = 1.954f;
     float errorSum = 0.023f;
-
+    //Set convert ADC reading into voltage
 	float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
 
 	float vin = (scaledVout / scalingRatio);
@@ -691,7 +705,7 @@ float calculate_DC_current(uint16_t ADCreading) {
 }
 
 float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count) {
-	if (count == 0) {
+	if (count == 0) {//Prevent 0 division
 		return 0.0f;
 	}
 
@@ -699,7 +713,7 @@ float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count) {
 	float meanSq = (float)sumSq / (float)count;
 
 	float variance = meanSq - (mean * mean);
-
+    //Prevent negative square roots due to rounding
 	if (variance < 0.0f) {
 		variance = 0.0f;
 	}
@@ -754,17 +768,21 @@ float calculate_AC_current_high_Vpp(uint16_t minCounts, uint16_t maxCounts) {
 
 float calculate_frequency(uint32_t ticks) {
     if (ticks == 0) return 0.0f;
+    // (1,000,000 ticks/sec * 10 cycles) / total ticks for 10 cycles
     return (float)FREQ_CALC_CONSTANT / (float)ticks;
 }
 
 float calculate_phase_difference(uint16_t vTime, uint16_t iTime, uint32_t avgPeriodTicks) {
     if (avgPeriodTicks == 0) return 0.0f;
-
+    // Get the period of a single cycle from the averaged total
     float singleCycleTicks = (float)avgPeriodTicks / (float)FREQ_AVG_COUNT;
+    // Calculate raw difference (time between V-crossing and I-crossing)
+    // Result is in microseconds (ticks)
     int16_t diff = (int16_t)(iTime - vTime);
 
+    // Convert time difference to degrees
     float phase = ((float)diff / singleCycleTicks) * 360.0f;
-
+    // Normalize to -180 to 180 degrees
     while (phase > 180.0f) phase -= 360.0f;
     while (phase < -180.0f) phase += 360.0f;
 
@@ -803,9 +821,11 @@ uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr
 
 	switch(msg)
 	{
-		case U8X8_MSG_DELAY_NANO:
+		case U8X8_MSG_DELAY_NANO:// delay arg_int * 1 nano second
+            // At 20Mhz, each cycle is 50ns, the call itself is slower.
 			break;
-		case U8X8_MSG_DELAY_100NANO:
+		case U8X8_MSG_DELAY_100NANO:// delay arg_int * 100 nano seconds
+            // Approximate best case values...
 			#define CALL_CYCLES 26UL
 			#define CALC_CYCLES 4UL
 			#define RETURN_CYCLES 4UL
@@ -821,11 +841,11 @@ uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr
 			"brne 1b" : "=w" (cycles) : "0" (cycles)
 			);
 			break;
-		case U8X8_MSG_DELAY_10MICRO:
+		case U8X8_MSG_DELAY_10MICRO:        // delay arg_int * 10 micro seconds
 			for(int i=0 ; i < arg_int ; i++)
 				_delay_us(10);
 			break;
-		case U8X8_MSG_DELAY_MILLI:
+		case U8X8_MSG_DELAY_MILLI:          // delay arg_int * 1 milli second
 			for(int i=0 ; i < arg_int ; i++)
 				_delay_ms(1);
 			break;
@@ -836,86 +856,101 @@ uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr
 }
 
 uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr) {
-
+    // Re-use library for delays
 	switch(msg)
 	{
-		case U8X8_MSG_GPIO_AND_DELAY_INIT:
+		case U8X8_MSG_GPIO_AND_DELAY_INIT:  // called once during init phase of u8g2/u8x8
 			DISPLAY_CLK_DIR |= 1<<DISPLAY_CLK_PIN;
 			DISPLAY_DATA_DIR |= 1<<DISPLAY_DATA_PIN;
 			DISPLAY_CS_DIR |= 1<<DISPLAY_CS_PIN;
 			DISPLAY_DC_DIR |= 1<<DISPLAY_DC_PIN;
 			DISPLAY_RESET_DIR |= 1<<DISPLAY_RESET_PIN;
-			break;
-		case U8X8_MSG_GPIO_SPI_CLOCK:
+			break;                          // can be used to setup pins
+		case U8X8_MSG_GPIO_SPI_CLOCK:       // Clock pin: Output level in arg_int
 			if(arg_int)
 				DISPLAY_CLK_PORT |= (1<<DISPLAY_CLK_PIN);
 			else
 				DISPLAY_CLK_PORT &= ~(1<<DISPLAY_CLK_PIN);
 			break;
-		case U8X8_MSG_GPIO_SPI_DATA:
+		case U8X8_MSG_GPIO_SPI_DATA:        // MOSI pin: Output level in arg_int
 			if(arg_int)
 				DISPLAY_DATA_PORT |= (1<<DISPLAY_DATA_PIN);
 			else
 				DISPLAY_DATA_PORT &= ~(1<<DISPLAY_DATA_PIN);
 			break;
-		case U8X8_MSG_GPIO_CS:
+		case U8X8_MSG_GPIO_CS:               // CS (chip select) pin: Output level in arg_int
 			if(arg_int)
 				DISPLAY_CS_PORT |= (1<<DISPLAY_CS_PIN);
 			else
 				DISPLAY_CS_PORT &= ~(1<<DISPLAY_CS_PIN);
-			break;
-		case U8X8_MSG_GPIO_DC:
+			break;  
+		case U8X8_MSG_GPIO_DC:              // DC (data/cmd, A0, register select) pin: Output level in arg_int
 			if(arg_int)
 				DISPLAY_DC_PORT |= (1<<DISPLAY_DC_PIN);
 			else
 				DISPLAY_DC_PORT &= ~(1<<DISPLAY_DC_PIN);
 			break;
 
-		case U8X8_MSG_GPIO_RESET:
+		case U8X8_MSG_GPIO_RESET:           // Reset pin: Output level in arg_int
 			if(arg_int)
 				DISPLAY_RESET_PORT |= (1<<DISPLAY_RESET_PIN);
 			else
 				DISPLAY_RESET_PORT &= ~(1<<DISPLAY_RESET_PIN);
 			break;
 		default:
-			if (u8x8_avr_delay(u8x8, U8X8_MSG_DELAY_NANO, arg_int, arg_ptr))
+			if (u8x8_avr_delay(u8x8, U8X8_MSG_DELAY_NANO, arg_int, arg_ptr))// check for any delay msgs
 				return 1;
-			u8x8_SetGPIOResult(u8x8, 1);
+			u8x8_SetGPIOResult(u8x8, 1);    // default return value
 			break;
 	}
 	return 1;
 }
 
 float eepromRead(unsigned int address) {
+    /* Wait for completion of previous write */
     while(EECR & (1<<EEPE)){
     }
+    /* Set up address register */
     EEAR = address;
+    /* Start eeprom read by writing EERE */
     EECR |= (1<<EERE);
+    /* Return data from Data Register */
     return EEDR;
 }
 
 void eepromUpdate(unsigned int address, float data) {
+    /* Wait for completion of previous write */
     while(EECR & (1<<EEPE)) {
     }
     if (data != eepromRead(address)) {
+        /* Set up address and Data Registers */
         EEAR = address;
         EEDR = data;
+        /* Write logical one to EEMPE */
         EECR |= (1<<EEMPE);
+        /* Start eeprom write by setting EEPE */
         EECR |= (1<<EEPE);
     }
 }
 
 void setup_timer2(void) {
+    // CTC Mode
     TCCR2A = (1 << WGM21);
+    
+    // Set for ~32ms interval at 8MHz
+    // 8,000,000 / 1024 (prescaler) / 250 (OCR2A) = 31.25 Hz
     OCR2A = 249;
+     // /1024 prescaler
     TCCR2B = (1 << CS22) | (1 << CS21) | (1 << CS20);
+    
+    // Enable interrupt
     TIMSK2 |= (1 << OCIE2A);
 }
-
+// 2. Update the Timer2 ISR
 ISR(TIMER2_COMPA_vect) {
-    timer2Flag = 1;
-    timer2Overflows++;
-    LcdTick = 1;
+    timer2Flag = 1;     // Used for your internal timing logic
+    timer2Overflows++;  // Used for your current timestamping
+    LcdTick = 1;        // Now the LCD refreshes from here!
 
     uartSendTick++;
     if (uartSendTick >= 32) {
@@ -925,6 +960,13 @@ ISR(TIMER2_COMPA_vect) {
 }
 
 void lcd_init(void){
+     /*
+		Select a setup procedure for your display from here: https://github.com/olikraus/u8g2/wiki/u8g2setupc
+		1. Arg: Address of an empty u8g2 structure
+		2. Arg: Usually U8G2_R0, others are listed here: https://github.com/olikraus/u8g2/wiki/u8g2reference#carduino-example
+		3. Arg: Protocol procedure (u8g2-byte), list is here: https://github.com/olikraus/u8g2/wiki/Porting-to-new-MCU-platform#communication-callback-eg-u8x8_byte_hw_i2c
+		4. Arg: Defined in this code itself (see above)
+	*/
 	u8g2_Setup_st7920_s_128x64_f(&u8g2, U8G2_R0, u8x8_byte_4wire_sw_spi, u8x8_avr_gpio_and_delay);
 
 	u8g2_InitDisplay(&u8g2);
@@ -936,39 +978,65 @@ void lcd_init(void){
 }
 
 void init(){
-    clock_prescale_set(clock_div_1);
+    clock_prescale_set(clock_div_1);    // set the clock prescaler to 1
 
-    DDRB &= ~((1<<1)|(1<<4)|(1<<6)|(1<<7));
-    DDRD &= ~((1<<2)|(1<<6)|(1<<7));
+    //eeprom_update_float((float*)(MenuSettingsEEPROMAddresses[4]), (float)4);
+    
+    // Set input ports for buttons
+    DDRB &= ~((1<<1)|(1<<4)|(1<<6)|(1<<7));     // 1 and 4 are the Enter and Back buttons
+    DDRD &= ~((1<<2)|(1<<6)|(1<<7));            // 2 is for checking pc connection
 
+    
+    // Set output port for LCD backlight
 	DDRD |= (1<<5);
 
-	TCCR0A |= (1 << WGM01) | (1 << WGM00) | (1 << COM0B1);
-	TCCR0B |= (1 << CS01);
+	TCCR0A |= (1 << WGM01) | (1 << WGM00) | (1 << COM0B1);  // set fast PWM Mode and non-inverting mode
+	TCCR0B |= (1 << CS01);                                  // set prescaler to 8
     setup_timer1_freerun();
 	setup_timer2();
 	setup_ADC();
+    
+    // // Set up Timer/Counter1
+    // TCCR1B |= (1 << WGM12);   // Configure timer 1 for CTC mode
+    // OCR1A = (uint16_t)(1000000 / 4);     // Set CTC compare value for 8MHz AVR clock , with a prescaler of 8 (1000000 is 1 second)
+    // TIMSK1 |= (1 << OCIE1A);  // Enable CTC interrupt
+    // TCCR1B |= (1 << CS11); // Start Timer/Counter1 at F_CPU/8
+
+    // Enable global interrupts 
+    
     TWI_init();
+	lcd_init();
 
     sei();
+
+	// To be removed after flashing the mcu
+	eepromUpdate(5, (float)turnsRatio);
+	MenuSettings[5] = turnsRatio;
 
     if (((int)eepromRead(MEASUREMENT_1_ADDRESS) >= 1) && ((int)eepromRead(MEASUREMENT_1_ADDRESS) <= 15)) {
 		for (int i = 0; i < 6; i++){
             if (i < 4) {
-                MenuSettings[i] = (eepromRead(MenuSettingsEEPROMAddresses[i]) - 1);
+                MenuSettings[i] = (eepromRead(MenuSettingsEEPROMAddresses[i]) - 1);// Read values from addresses if values are already stored there.
             } else {
-                MenuSettings[i] = eepromRead(MenuSettingsEEPROMAddresses[i]);
+                MenuSettings[i] = eepromRead(MenuSettingsEEPROMAddresses[i]);       // Read values from addresses if values are already stored there.
             }
 		}
+        //OCR0B = 0;
     } else {
-        for (int i = 0; i < 6; i++){
+        for (int i = 0; i < 6; i++){// Write initial values to menu setting addresses
 			if (i == 4) {
-				eepromUpdate(i, (float)4);
+				eepromUpdate(i, (float)4);// Initial Backlight value. 4 is 100% Backlight.
+			} else if (i == 5) {
+				eepromUpdate(i, (float)turnsRatio);
 			} else {
 				eepromUpdate(i, 1);
 			}
 		}
+        //OCR0B = Backlight[4];
     }
+    //OCR0B = Backlight[4]; // Set Backlight
+	//OCR0B = Backlight[(int)eeprom_read_float((float*)BACKLIGHT_ADDRESS)]; // Set Backlight
+	turnsRatio = MenuSettings[5];
 }
 
 void DrawPCIcon() {
@@ -978,7 +1046,7 @@ void DrawPCIcon() {
 }
 
 void DrawTime() {
-    u8g2_SetFont(&u8g2, u8g2_font_u8glib_4_hr);
+    u8g2_SetFont(&u8g2, u8g2_font_u8glib_4_hr);// Change to smaller font
     u8g2_SetDrawColor(&u8g2, 2);
     char Index[2];
 	sprintf(Index , "%d", (int)eepromRead(MEASUREMENT_3_ADDRESS));
@@ -1004,7 +1072,7 @@ void DrawTime() {
 
 void MainScreenDraw(float measurements[]) {
 	for (int i=0; i<5; i++) {
-        if (i == SelectPosition[0]) {
+        if (i == SelectPosition[0]) {   // Selection Box
             u8g2_SetDrawColor(&u8g2, 1);
             u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
             u8g2_SetDrawColor(&u8g2, 0);
@@ -1014,49 +1082,53 @@ void MainScreenDraw(float measurements[]) {
             u8g2_SetDrawColor(&u8g2, 1);
         }
 		if (i<4) {
-			u8g2_DrawStr(&u8g2, 1, 10 + (i * 13), MeasurementName[(int)MenuSettings[i]]);
-            char Measurement[10];
-			int measurement = measurements[(int)MenuSettings[i]];
-            sprintf(Measurement , "%d.%d", measurement, (int)round(((measurements[(int)MenuSettings[i]])-measurement)*100));
-            u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), Measurement);
+			u8g2_DrawStr(&u8g2, 1, 10 + (i * 13), MeasurementName[(int)MenuSettings[i]]);   // MenuSettings stores the index for which measurement it is
+            char measurementBuffer[10];
+			int measurementInt = measurements[(int)MenuSettings[i]];
+            sprintf(measurementBuffer , "%d.%d", (int)measurementInt, (int)round(((measurements[(int)MenuSettings[i]])-measurementInt)*100));// Convert Measurement float value to string
+            u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), measurementBuffer);// Each row is 9 high with 2 space in between
 		} else {
 			u8g2_DrawStr(&u8g2, 1, 61, "Settings");
 		}
 	}
     u8g2_SetDrawColor(&u8g2, 2);
-    u8g2_DrawLine(&u8g2, 44, 1, 44, 48);
+    u8g2_DrawLine(&u8g2, 44, 1, 44, 48);    // Line separating measurement name from measurement value
 }
 
 void MainScreen(float measurements[]) {
-	MainScreenDraw(measurements);
-	if (ButtonTurn) {
-		if (ENTER || RIGHT) {
+	MainScreenDraw(measurements);   // Refreshes display constantly to display changing values.
+	if (ButtonTurn) {               // Attempts to prevent pressing of multiple buttons.
+		if (ENTER || RIGHT) {       // Enter and right
 			ButtonTurn = 0;
             u8g2_SetDrawColor(&u8g2, 0);
             u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
 			if (SelectPosition[0]<4) {
-				Menu = 1;
-				SelectPosition[1] = (int)MenuSettings[SelectPosition[0]];
+				Menu = 1;           // Measurement select menu
+				SelectPosition[1] = (int)MenuSettings[SelectPosition[0]];   // Set position at the index of the measurement for Measurement select screen.
+				u8g2_ClearBuffer(&u8g2);
                 MeasurementSelectDraw();
+				u8g2_SendBuffer(&u8g2);
 			} else if (SelectPosition[0] == 4) {
-				Menu = 2;
+				Menu = 2;           // Settings menu
 				SelectPosition[1] = 0;
 				BacklightIndexCopy = (int)MenuSettings[4];
+                u8g2_ClearBuffer(&u8g2);
                 SettingsDraw();
+                u8g2_SendBuffer(&u8g2);
 			}
 			ButtonTurn = 1;
-		} else if (UP) {
+		} else if (UP) {            // Up
 			ButtonTurn = 0;
 			SelectPosition[0]--;
 			if (SelectPosition[0]<0) {
 				SelectPosition[0] = 4;
 			}
 			ButtonTurn = 1;
-		} else if (DOWN) {
+		} else if (DOWN) {          // Down
             if (OCR0B == 0) {
-                OCR0B = Backlight[(int)MenuSettings[4]];
+                OCR0B = Backlight[(int)MenuSettings[4]];    // Set Backlight
             } else {
-                OCR0B = 0;
+                OCR0B = 0;          // Set Backlight
             }
 			ButtonTurn = 0;
 			SelectPosition[0]++;
@@ -1070,7 +1142,7 @@ void MainScreen(float measurements[]) {
 
 void MeasurementSelectDraw() {
 	for (int i=0; i<4; i++) {
-		if (i == SelectPosition[0]) {
+		if (i == SelectPosition[0]) {   // Selection Box
 			u8g2_SetDrawColor(&u8g2, 1);
 			u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
 			u8g2_SetDrawColor(&u8g2, 0);
@@ -1081,9 +1153,9 @@ void MeasurementSelectDraw() {
 			u8g2_SetDrawColor(&u8g2, 1);
 		}
         int idx;
-		if (i < SelectPosition[0]) {
+		if (i < SelectPosition[0]) {    // Shows measurements above select
             idx = SelectPosition[1] - (SelectPosition[0] - i);
-		} else {
+		} else {    // Shows measurements below select
             idx = SelectPosition[1] + (i - SelectPosition[0]);
 		}
         while (idx < 0) idx += MEASUREMENTS;
@@ -1093,43 +1165,50 @@ void MeasurementSelectDraw() {
     u8g2_SetDrawColor(&u8g2, 0);
     u8g2_DrawBox(&u8g2, 0, (4 * 13) - 1, 128, 13);
 	u8g2_SetDrawColor(&u8g2, 2);
-	u8g2_DrawLine(&u8g2, 44, 1, 44, 48);
+	u8g2_DrawLine(&u8g2, 44, 1, 44, 48);    // Line separating measurement name from measurement value
 }
 
+//u8g2_ClearBuffer(&u8g2);
+//u8g2_SendBuffer(&u8g2);
+
 void MeasurementSelect(){
-    MeasurementSelectDraw();
 	if (ButtonTurn){
-		if (ENTER || LEFT) {
+		if (ENTER || LEFT) {    // Enter and left
 			ButtonTurn = 0;
-			MenuSettings[SelectPosition[0]] = SelectPosition[1];
-			eepromUpdate(MenuSettingsEEPROMAddresses[SelectPosition[0]], SelectPosition[1] + 1);
-			Menu--;
+			MenuSettings[SelectPosition[0]] = SelectPosition[1];    // Confirm measurement selection
+			eepromUpdate(MenuSettingsEEPROMAddresses[SelectPosition[0]], SelectPosition[1] + 1);    // Update in EEPROM
+			Menu = 0;
 			ButtonTurn = 1;
-		} else if (BACK) {
+		} else if (BACK) {  // Back
 			ButtonTurn = 0;
-			Menu--;
+			Menu = 0;
 			ButtonTurn = 1;
-		} else if (UP) {
+		} else if (UP) {    // Up
 			ButtonTurn = 0;
 			SelectPosition[1]--;
 			if (SelectPosition[1] < 0) {
 				SelectPosition[1] = MEASUREMENTS - 1;
 			}
+			u8g2_ClearBuffer(&u8g2);
 			MeasurementSelectDraw();
+			u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if (DOWN) {
+		} else if (DOWN) {  // Down
 			ButtonTurn = 0;
 			SelectPosition[1]++;
 			if (SelectPosition[1] > (MEASUREMENTS - 1)) {
 				SelectPosition[1] = 0;
 			}
+			u8g2_ClearBuffer(&u8g2);
 			MeasurementSelectDraw();
+			u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
 		}
 	}
 }
 
 void SettingsDraw() {
+	//u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr); // Reset font after returning from TurnsRatioMenuDraw
 	for (int i=0; i<2; i++) {
 		if (i == SelectPosition[0]) {
 			u8g2_SetDrawColor(&u8g2, 1);
@@ -1142,16 +1221,17 @@ void SettingsDraw() {
 		}
 		if (i == 0) {
 			u8g2_DrawStr(&u8g2, 1, 10, "Backlight:");
-			u8g2_DrawTriangle(&u8g2, 60, 1, 53, 5, 60, 9);
+			u8g2_DrawTriangle(&u8g2, 60, 1, 53, 5, 60, 9);  // Arrows
 			u8g2_DrawTriangle(&u8g2, 70, 1, 77, 5, 70, 9);
 			char Index[2];
-			sprintf(Index , "%d", BacklightIndexCopy);
+			sprintf(Index , "%d", BacklightIndexCopy);      // Convert int BacklightIndexCopy to string
 			u8g2_DrawStr(&u8g2, 63, 10, Index);
 		} else {
 			u8g2_DrawStr(&u8g2, 1, 24, "Turns Ratio:");
-			char TurnsRatio[7];
-			sprintf(TurnsRatio , "%.3f", (float)MenuSettings[5]);
-			u8g2_DrawStr(&u8g2, 70, 24, TurnsRatio);
+			char turnsRatioBuffer[10];
+			int turnsRatioInt = turnsRatio;
+			sprintf(turnsRatioBuffer , "%d.%d", turnsRatioInt, (int)round((turnsRatio-turnsRatioInt)*100));
+			u8g2_DrawStr(&u8g2, 70, 24, turnsRatioBuffer);
 		}
 	}
 }
@@ -1159,79 +1239,95 @@ void SettingsDraw() {
 void Settings() {
     SettingsDraw();
 	if (ButtonTurn){
-		if (PINB & (1<<1)) {
-			if (SelectPosition[1] == 1) {
+		if (PINB & (1<<1)) {    // Enter
+			u8g2_SetDrawColor(&u8g2, 0);
+			u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
+			if (SelectPosition[1] == 1) {   // Into transformer turns ratio edit screen
 				ButtonTurn = 0;
-				Menu++;
+				Menu = 3;
 				TurnsRatioCopy = MenuSettings[5];
 				SelectPosition[1] = 0;
 				ButtonTurn = 1;
+				u8g2_ClearBuffer(&u8g2);
                 TurnsRatioMenuDraw();
-			} else {
+				u8g2_SendBuffer(&u8g2);
+			} else {    // Confirm Backlight setting
 				ButtonTurn = 0;
-				Menu--;
+				Menu = 0;
 				MenuSettings[4] = BacklightIndexCopy;
 				OCR0B = Backlight[(int)MenuSettings[4]];
+                //eeprom_update_float((float*)MenuSettingsEEPROMAddresses[4], MenuSettings[4]);
 				ButtonTurn = 1;
 			}
-		} else if ((PINB & (1<<4))) {
+		} else if ((PINB & (1<<4))) {   // Back. Exit settings without saving backlight setting changes
+			u8g2_SetDrawColor(&u8g2, 0);
+			u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
 			ButtonTurn = 0;
-			Menu--;
-			BacklightIndexCopy = (int)MenuSettings[4];
+			Menu = 0;
+			BacklightIndexCopy = (int)MenuSettings[4];  // Return without saving Backlight changes
 			OCR0B = Backlight[(int)MenuSettings[4]];
 			ButtonTurn = 1;
-		} else if ((PINB & (1<<6))) {
+		} else if ((PINB & (1<<6))) {   // Up
 			ButtonTurn = 0;
 			SelectPosition[1]--;
 			if (SelectPosition[1] < 0) {
 				SelectPosition[1] = 1;
 			}
+			u8g2_ClearBuffer(&u8g2);
 			SettingsDraw();
+			u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if ((PINB & (1<<7))) {
+		} else if ((PINB & (1<<7))) { // Down
 			ButtonTurn = 0;
 			SelectPosition[1]++;
 			if (SelectPosition[1] > 1) {
 				SelectPosition[1] = 0;
 			}
+			u8g2_ClearBuffer(&u8g2);
 			SettingsDraw();
+			u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if ((PIND & (1<<6)) && (SelectPosition[1] == 0)) {
+		} else if ((PIND & (1<<6)) && (SelectPosition[1] == 0)) {   // Right. Increase backlight setting
 			ButtonTurn = 0;
 			BacklightIndexCopy++;
 			if (BacklightIndexCopy > 4) {
 				BacklightIndexCopy = 0;
 			}
 			OCR0B = Backlight[BacklightIndexCopy];
+			u8g2_ClearBuffer(&u8g2);
 			SettingsDraw();
+			u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if ((PIND & (1<<7)) && (SelectPosition[1] == 0)) {
+		} else if ((PIND & (1<<7)) && (SelectPosition[1] == 0)) {   // Left. Decrease backlight setting
 			ButtonTurn = 0;
 			BacklightIndexCopy--;
 			if (BacklightIndexCopy < 0) {
 				BacklightIndexCopy = 4;
 			}
 			OCR0B = Backlight[BacklightIndexCopy];
+			u8g2_ClearBuffer(&u8g2);
 			SettingsDraw();
+			u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
 		}
 	}
 }
 
 void TurnsRatioMenuDraw() {
-	int DecimalOffset = 0;
+	int DecimalOffset = 0;  // Used to offset the x position due to the decimal
 
-	SettingsDraw();
+	SettingsDraw();     // Display normal settings screen
 
 	char TurnsRatio[7];
-	sprintf(TurnsRatio , "%.3f", TurnsRatioCopy);
+	sprintf(TurnsRatio , "%.3f", TurnsRatioCopy);   // Convert TurnsRatioCopy to string
 	u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
 
-	for (int i=0; i<5; i++) {
-		if (i == 2) {
+	//u8g2_SetFont(&u8g2, u8g2_font_VCR_OSD_mn); // Change to larger font
+	for (int i=0; i<5; i++) { // Exact values yet to be confirmed
+		if (i == 2) { // Account for decimal
 			DecimalOffset = 3;
 		}
-		u8g2_DrawTriangle(&u8g2, (i * 5) - 2 + DecimalOffset, 27, (i * 5) + DecimalOffset, 22, (i * 5) + 2 + DecimalOffset, 27);
+		u8g2_DrawTriangle(&u8g2, (i * 5) - 2 + DecimalOffset, 27, (i * 5) + DecimalOffset, 22, (i * 5) + 2 + DecimalOffset, 27);    // Arrows
 		u8g2_DrawTriangle(&u8g2, (i * 5) - 2 + DecimalOffset, 46, (i * 5) + DecimalOffset, 51, (i * 5) + 2 + DecimalOffset, 46);
 		if (i == SelectPosition[0]) {
 			u8g2_SetDrawColor(&u8g2, 1);
@@ -1244,62 +1340,79 @@ void TurnsRatioMenuDraw() {
 void TurnsRatioMenu(){
     TurnsRatioMenuDraw();
 	if (ButtonTurn){
-		if ((PINB & (1<<1))) {
+		if ((PINB & (1<<1))) {  // Enter. Confirm New Turn Ratio
+			u8g2_SetDrawColor(&u8g2, 0);
+			u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
 			ButtonTurn = 0;
 			MenuSettings[5] = TurnsRatioCopy;
+			//eeprom_update_float((float*)MenuSettingsEEPROMAddresses[5], TurnsRatioCopy);
             turnsRatio = MenuSettings[5];
-			Menu--;
+			Menu = 2;
 			ButtonTurn = 1;
+			u8g2_ClearBuffer(&u8g2);
             SettingsDraw();
-		} else if ((PINB & (1<<4))) {
+			u8g2_SendBuffer(&u8g2);
+		} else if ((PINB & (1<<4))) {   // Back. Return without saving Turns Ratio changes
+			u8g2_SetDrawColor(&u8g2, 0);
+			u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
 			ButtonTurn = 0;
-			Menu--;
+			Menu = 2;
 			SelectPosition[1] = 1;
 			ButtonTurn = 1;
+			u8g2_ClearBuffer(&u8g2);
             SettingsDraw();
+			u8g2_SendBuffer(&u8g2);
 		} else if ((PINB & (1<<6))) {
 			ButtonTurn = 0;
 
 			char TurnsRatio[7];
-			sprintf(TurnsRatio , "%.3f", TurnsRatioCopy);
+			sprintf(TurnsRatio , "%.3f", TurnsRatioCopy);   // Convert TurnsRatioCopy to string
 			u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
 
-			if ((TurnsRatio[SelectPosition[1]] - '0') == 9) {
-				TurnsRatioCopy -= (90 / pow(10, SelectPosition[1]));
+			if ((TurnsRatio[SelectPosition[1]] - '0') == 9) {   // Check specific digit
+				TurnsRatioCopy -= (90 / pow(10, SelectPosition[1]));    // Up from 9, cycle to 0
 			} else {
-				TurnsRatioCopy += (10 / pow(10, SelectPosition[1]));
+				TurnsRatioCopy += (10 / pow(10, SelectPosition[1]));    // plus 10 / (10 ^ digit place). e.g. if 1st digit: 10 / 10 ^ 0 = 10 / 1 = 10
 			}
+			u8g2_ClearBuffer(&u8g2);
 			TurnsRatioMenuDraw();
+			u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if ((PINB & (1<<7))) {
+		} else if ((PINB & (1<<7))) {   // Down
 			ButtonTurn = 0;
 
 			char TurnsRatio[7];
-			sprintf(TurnsRatio , "%.3f", TurnsRatioCopy);
+			sprintf(TurnsRatio , "%.3f", TurnsRatioCopy);   // Convert TurnsRatioCopy to string
 			u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
 
-			if ((TurnsRatio[SelectPosition[1]] - '0') == 0) {
-				TurnsRatioCopy += (90 / pow(10, SelectPosition[1]));
+			if ((TurnsRatio[SelectPosition[1]] - '0') == 0) {   // Check specific digit
+				TurnsRatioCopy += (90 / pow(10, SelectPosition[1]));    // Down from 0, cycle to 9
 			} else {
-				TurnsRatioCopy -= (10 / pow(10, SelectPosition[1]));
+				TurnsRatioCopy -= (10 / pow(10, SelectPosition[1]));    // subtract 10 / (10 ^ digit place). e.g. if 1st digit: 10 / 10 ^ 0 = 10 / 1 = 10
 			}
+			u8g2_ClearBuffer(&u8g2);
 			TurnsRatioMenuDraw();
+			u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if ((PIND & (1<<6))) {
+		} else if ((PIND & (1<<6))) {   // Right
 			ButtonTurn = 0;
 			SelectPosition[1]++;
 			if (SelectPosition[1] > 4) {
 				SelectPosition[1] = 0;
 			}
+			u8g2_ClearBuffer(&u8g2);
 			TurnsRatioMenuDraw();
+			u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if ((PIND & (1<<7))) {
+		} else if ((PIND & (1<<7))) {   // Left
 			ButtonTurn = 0;
 			SelectPosition[1]--;
 			if (SelectPosition[1] < 0) {
 				SelectPosition[1] = 4;
 			}
+			u8g2_ClearBuffer(&u8g2);
 			TurnsRatioMenuDraw();
+			u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
 		}
 	}
@@ -1308,7 +1421,6 @@ void TurnsRatioMenu(){
 // ***************    MAIN    *************************
 
 int main(void) {
-    lcd_init();
     init();
 
 	UART_init();
@@ -1339,14 +1451,16 @@ int main(void) {
 	uint16_t localDCVoltageADC;
 	uint16_t localDCCurrentADC;
 
+    //Fill all measurements with placeholders
 	for (uint8_t i = 0; i < NO_MEASUREMENTS; i++) {
 		measurements[i] = 4.2f;
-	}
+	}   //Only code for DC/AC voltage and Current have been implemented!!
 
     uint32_t localPeriodTicks = 0;
 
 	while(1){
 		if (acWindowReady){
+            //Disable interrupts while copying over ADC readings for safety
             uint32_t localACVoltageSum;
             uint32_t localACVoltageSumSq;
 
@@ -1374,7 +1488,8 @@ int main(void) {
             localACVoltageMax = acVoltageMax;
             localACCurrentHighMin = acCurrentHighMin;
             localACCurrentHighMax = acCurrentHighMax;
-
+            
+            //Reset for next group of samples
             acVoltageSum = 0;
             acVoltageSumSq = 0;
             acVoltageMin = 1023;
@@ -1394,6 +1509,7 @@ int main(void) {
     		localITime = iCrossingTime;
             sei();
 
+            //Save AC measurements
             measurements[MEAS_AC_VOLTAGE] =
                 calculate_AC_voltage_RMS(localACVoltageSum,
                                          localACVoltageSumSq,
@@ -1426,6 +1542,7 @@ int main(void) {
         }
 
         if (areReadingsReady) {
+            //Disable interrupts while copying over ADC readings for safety
             cli();
 
             localDCVoltageADC = ADCReading[DC_VOLTAGE_CHANNEL];
@@ -1434,8 +1551,17 @@ int main(void) {
             areReadingsReady = 0;
             sei();
 
+            //Save DC measurements
             measurements[MEAS_DC_VOLTAGE] = calculate_DC_voltage(localDCVoltageADC);
             measurements[MEAS_DC_CURRENT] = calculate_DC_current(localDCCurrentADC);
+            
+            //Save RTC time as seconds since midnight
+//            rtc_time_t rtc;
+//            if (DS1307_read_time(&rtc)) {
+//                measurements[MEAS_RTC_TIME] = (float)rtc_seconds_of_day(&rtc);
+//            }
+            
+            //print full measurement array for communication to gui
             measurements[MEAS_DC_POWER] = measurements[MEAS_DC_VOLTAGE] * measurements[MEAS_DC_CURRENT];
         }
 
@@ -1450,12 +1576,13 @@ int main(void) {
             }
 
             UART_print_measurements(measurements);
+            //ARRAY FORMAT IS: [DC Voltage, DC Current, AC Voltage RMS, AC Current (high current mode) RMS, AC Current (low current mode) RMS, AC Voltage Vpp, AC Current (high current mode) Vpp, AC Current (low current mode) Vpp, phase difference, power factor, frequency, DC power, AC real power, AC reactive power, AC apparant power, RTC time]
         }
-
-        if (LcdTick) {
+        // *************************     LCD CODE      ******************************
+        if (LcdTick && !Menu) {
             u8g2_ClearBuffer(&u8g2);
         }
-		if (!Menu) {
+		if (!Menu) {    // The different menu screens.
 			MainScreen(measurements);
 		} else if (Menu == 1) {
 			MeasurementSelect();
@@ -1468,7 +1595,7 @@ int main(void) {
 			DrawPCIcon();
 		}
 		DrawTime();
-        if (LcdTick) {
+        if (LcdTick && !Menu) {
             u8g2_SendBuffer(&u8g2);
             LcdTick = 0;
         }
