@@ -1,4 +1,5 @@
 // *************************      INCLUDES      ******************************
+#define F_CPU 8000000UL
 #include <avr/io.h>
 #include "u8g2.h"
 #include <util/delay.h>
@@ -20,7 +21,7 @@ FUSES = {
 
 LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 
-#define F_CPU 8000000UL
+
 
 // *************************      LCD DEFINES      ******************************
 #define DISPLAY_CLK_DIR DDRB
@@ -922,7 +923,7 @@ void DrawTime() {
 	sprintf(Index , "%d", (int)eepromRead(MEASUREMENT_3_ADDRESS));
 	u8g2_DrawStr(&u8g2, 55, 61, Index);
 
-    char TimeString[18];
+    char TimeString[20];
     if (rtcValid && rtcTimeSet) {
         sprintf(TimeString, "%02u/%02u/%02u %02u:%02u",
                 rtcCachedTime.day,
