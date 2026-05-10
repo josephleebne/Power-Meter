@@ -850,9 +850,7 @@ void lcd_init(void){
 
 void init(){
     clock_prescale_set(clock_div_1);    // set the clock prescaler to 1
-
-    //eeprom_update_float((float*)(MenuSettingsEEPROMAddresses[4]), (float)4);
-    
+	
     // Set input ports for buttons
     DDRB &= ~((1<<1)|(1<<4)|(1<<6)|(1<<7));     // 1 and 4 are the Enter and Back buttons
     DDRD &= ~((1<<2)|(1<<6)|(1<<7));            // 2 is for checking pc connection
@@ -1126,7 +1124,7 @@ void Settings() {
 				Menu = 0;
 				MenuSettings[4] = BacklightIndexCopy;
 				OCR0B = Backlight[(int)MenuSettings[4]];
-                //eeprom_update_float((float*)MenuSettingsEEPROMAddresses[4], MenuSettings[4]);
+				eepromUpdate(BACKLIGHT_ADDRESS, BacklightIndexCopy);
 				ButtonTurn = 1;
 			}
 		} else if ((PINB & (1<<4))) {   // Back. Exit settings without saving backlight setting changes
