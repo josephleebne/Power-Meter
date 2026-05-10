@@ -171,6 +171,7 @@ volatile uint32_t lastRTCPoll = 0;
 //Turns ratio
 float turnsRatio = 26.788;
 
+// LCD code function prototypes
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 void lcd_init();
@@ -202,7 +203,7 @@ uint8_t DS1307_set_time(const rtc_time_t *t);
 uint32_t rtc_seconds_of_day(const rtc_time_t *t);
 uint8_t RTC_poll_and_cache(void);
 
-// Global variables
+// LCD Global variables
 u8g2_t u8g2;
 float MenuSettings[] = {0, 0, 0, 0, 4, 26.788}; // Measurement 1, Measurement 2, Measurement 3, Measurement 4, BacklightIndex, TurnsRatio
 int MenuSettingsEEPROMAddresses[] = {MEASUREMENT_1_ADDRESS, MEASUREMENT_2_ADDRESS, MEASUREMENT_3_ADDRESS, MEASUREMENT_4_ADDRESS, BACKLIGHT_ADDRESS, TURNS_RATIO_ADDRESS};
@@ -242,12 +243,12 @@ char* MeasurementName[15] = {"DCV (V)",
 	"ACRRP (W)",
 	"ACAP (W)"};
 
-int Menu; // 0 = main screen, 1 = measurement select, 2 = settings, 3 = edit turns ratio
+int Menu = 0; // 0 = main screen, 1 = measurement select, 2 = settings, 3 = edit turns ratio
 int SelectPosition[2]; // 0 = row position for the main screen, 1 = secondary position used for other menus
-int ButtonTurn = 1; // Button turn baton
 int Backlight[] = {0, 64, 128, 192, 255}; // Values for OCR0B for Backlight
-int BacklightIndexCopy; // Copy of Backlight Index
-float TurnsRatioCopy; // Copy of Transformer Turns Ratio
+int BacklightIndexCopy = 4; // Copy of Backlight Index
+float TurnsRatioCopy = 26.788; // Copy of Transformer Turns Ratio
+int ButtonTurn = 1; // Button turn baton
 
 //RTC Functions
 void TWI_init(void) {
@@ -895,8 +896,10 @@ void init(){
 			}
 		}
     }
-    OCR0B = Backlight[(int)MenuSettings[4]]; // Set Backlight
-	turnsRatio = MenuSettings[5];
+    BacklightIndexCopy = MenuSettings[4];
+    OCR0B = Backlight[BacklightIndexCopy]; // Set Backlight
+    turnsRatio = MenuSettings[5];
+    TurnsRatioCopy = turnsRatio;
 }
 
 void DrawPCIcon() {
@@ -973,7 +976,6 @@ void MainScreen(float measurements[]) {
 			} else if (SelectPosition[0] == 4) {
 				Menu = 2;           // Settings menu
 				SelectPosition[1] = 0;
-				BacklightIndexCopy = (int)MenuSettings[4];
                 u8g2_ClearBuffer(&u8g2);
                 SettingsDraw();
                 u8g2_SendBuffer(&u8g2);
@@ -1114,7 +1116,6 @@ void Settings() {
 			if (SelectPosition[1] == 1) {   // Into transformer turns ratio edit screen
 				ButtonTurn = 0;
 				Menu = 3;
-				TurnsRatioCopy = MenuSettings[5];
 				SelectPosition[1] = 0;
 				ButtonTurn = 1;
 				u8g2_ClearBuffer(&u8g2);
@@ -1134,7 +1135,7 @@ void Settings() {
 			ButtonTurn = 0;
 			Menu = 0;
 			BacklightIndexCopy = (int)MenuSettings[4];  // Return without saving Backlight changes
-			OCR0B = Backlight[(int)MenuSettings[4]];
+			OCR0B = Backlight[BacklightIndexCopy];
 			ButtonTurn = 1;
 		} else if ((PINB & (1<<6))) {   // Up
 			ButtonTurn = 0;
