@@ -3,7 +3,6 @@
 #include <avr/io.h>
 #include "u8g2.h"
 #include <util/delay.h>
-//#include <avr/eeprom.h>
 #include <math.h>
 #include <stdio.h>
 #include <avr/power.h>
@@ -205,7 +204,7 @@ uint8_t RTC_poll_and_cache(void);
 
 // Global variables
 u8g2_t u8g2;
-float MenuSettings[] = {0, 0, 0, 0, 4, 1}; // Measurement 1, Measurement 2, Measurement 3, Measurement 4, BacklightIndex, TurnsRatio
+float MenuSettings[] = {0, 0, 0, 0, 4, 26.788}; // Measurement 1, Measurement 2, Measurement 3, Measurement 4, BacklightIndex, TurnsRatio
 int MenuSettingsEEPROMAddresses[] = {MEASUREMENT_1_ADDRESS, MEASUREMENT_2_ADDRESS, MEASUREMENT_3_ADDRESS, MEASUREMENT_4_ADDRESS, BACKLIGHT_ADDRESS, TURNS_RATIO_ADDRESS};
 
 /*
@@ -866,18 +865,11 @@ void init(){
     setup_timer1_freerun();
 	setup_timer2();
 	setup_ADC();
-    
-    // // Set up Timer/Counter1
-    // TCCR1B |= (1 << WGM12);   // Configure timer 1 for CTC mode
-    // OCR1A = (uint16_t)(1000000 / 4);     // Set CTC compare value for 8MHz AVR clock , with a prescaler of 8 (1000000 is 1 second)
-    // TIMSK1 |= (1 << OCIE1A);  // Enable CTC interrupt
-    // TCCR1B |= (1 << CS11); // Start Timer/Counter1 at F_CPU/8
 
-    // Enable global interrupts 
-    
     TWI_init();
 	lcd_init();
 
+    // Enable global interrupts 
     sei();
 
 	// To be removed after flashing the mcu
@@ -892,7 +884,6 @@ void init(){
                 MenuSettings[i] = eepromRead(MenuSettingsEEPROMAddresses[i]);       // Read values from addresses if values are already stored there.
             }
 		}
-        //OCR0B = 0;
     } else {
         for (int i = 0; i < 6; i++){// Write initial values to menu setting addresses
 			if (i == 4) {
@@ -903,10 +894,8 @@ void init(){
 				eepromUpdate(i, 1);
 			}
 		}
-        //OCR0B = Backlight[4];
     }
-    //OCR0B = Backlight[4]; // Set Backlight
-	//OCR0B = Backlight[(int)eeprom_read_float((float*)BACKLIGHT_ADDRESS)]; // Set Backlight
+    OCR0B = Backlight[(int)MenuSettings[4]]; // Set Backlight
 	turnsRatio = MenuSettings[5];
 }
 
@@ -919,9 +908,6 @@ void DrawPCIcon() {
 void DrawTime() {
     u8g2_SetFont(&u8g2, u8g2_font_u8glib_4_hr);// Change to smaller font
     u8g2_SetDrawColor(&u8g2, 2);
-    char Index[2];
-	sprintf(Index , "%d", (int)eepromRead(MEASUREMENT_3_ADDRESS));
-	u8g2_DrawStr(&u8g2, 55, 61, Index);
 
     char TimeString[20];
     if (rtcValid && rtcTimeSet) {
@@ -955,9 +941,14 @@ void MainScreenDraw(float measurements[]) {
 		if (i<4) {
 			u8g2_DrawStr(&u8g2, 1, 10 + (i * 13), MeasurementName[(int)MenuSettings[i]]);   // MenuSettings stores the index for which measurement it is
             char measurementBuffer[10];
-			int measurementInt = measurements[(int)MenuSettings[i]];
-            sprintf(measurementBuffer , "%d.%d", (int)measurementInt, (int)round(((measurements[(int)MenuSettings[i]])-measurementInt)*100));// Convert Measurement float value to string
-            u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), measurementBuffer);// Each row is 9 high with 2 space in between
+            int measurementInt = measurements[(int)MenuSettings[i]];
+            int afterDecimal = ((measurements[(int)MenuSettings[i]])-measurementInt)*100;
+            if (afterDecimal < 10) {
+	            sprintf(measurementBuffer , "%d.0%d", (int)measurementInt, (int)round(afterDecimal));// Convert Measurement float value to string
+	        } else {
+	            sprintf(measurementBuffer , "%d.%d", (int)measurementInt, (int)round(afterDecimal));// Convert Measurement float value to string
+            }
+            u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), measurementBuffer); // Each row is 9 high with 2 space in between
 		} else {
 			u8g2_DrawStr(&u8g2, 1, 61, "Settings");
 		}
@@ -1099,9 +1090,16 @@ void SettingsDraw() {
 			u8g2_DrawStr(&u8g2, 63, 10, Index);
 		} else {
 			u8g2_DrawStr(&u8g2, 1, 24, "Turns Ratio:");
+			
 			char turnsRatioBuffer[10];
-			int turnsRatioInt = turnsRatio;
-			sprintf(turnsRatioBuffer , "%d.%d", turnsRatioInt, (int)round((turnsRatio-turnsRatioInt)*100));
+			int turnsRatioInt = TurnsRatioCopy;
+			int afterDecimal = (TurnsRatioCopy-turnsRatioInt)*100;
+			if (afterDecimal < 10) {
+				sprintf(turnsRatioBuffer , "%d.0%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+				} else {
+				sprintf(turnsRatioBuffer , "%d.%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+			}
+			
 			u8g2_DrawStr(&u8g2, 70, 24, turnsRatioBuffer);
 		}
 	}
@@ -1188,10 +1186,16 @@ void TurnsRatioMenuDraw() {
 	int DecimalOffset = 0;  // Used to offset the x position due to the decimal
 
 	SettingsDraw();     // Display normal settings screen
-
-	char TurnsRatio[7];
-	sprintf(TurnsRatio , "%.3f", TurnsRatioCopy);   // Convert TurnsRatioCopy to string
-	u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
+	
+	char turnsRatioBuffer[10];
+	int turnsRatioInt = TurnsRatioCopy;
+	int afterDecimal = (TurnsRatioCopy-turnsRatioInt)*100;
+	if (afterDecimal < 10) {
+		sprintf(turnsRatioBuffer , "%d.0%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert TurnsRatioCopy to string
+	} else {
+		sprintf(turnsRatioBuffer , "%d.%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert TurnsRatioCopy to string
+	}
+	u8g2_DrawStr(&u8g2, 2, 51, turnsRatioBuffer);
 
 	//u8g2_SetFont(&u8g2, u8g2_font_VCR_OSD_mn); // Change to larger font
 	for (int i=0; i<5; i++) { // Exact values yet to be confirmed
@@ -1216,8 +1220,8 @@ void TurnsRatioMenu(){
 			u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
 			ButtonTurn = 0;
 			MenuSettings[5] = TurnsRatioCopy;
-			//eeprom_update_float((float*)MenuSettingsEEPROMAddresses[5], TurnsRatioCopy);
             turnsRatio = MenuSettings[5];
+			eepromUpdate(TURNS_RATIO_ADDRESS, (float)turnsRatio);
 			Menu = 2;
 			ButtonTurn = 1;
 			u8g2_ClearBuffer(&u8g2);
@@ -1235,12 +1239,9 @@ void TurnsRatioMenu(){
 			u8g2_SendBuffer(&u8g2);
 		} else if ((PINB & (1<<6))) {
 			ButtonTurn = 0;
-
-			char TurnsRatio[7];
-			sprintf(TurnsRatio , "%.3f", TurnsRatioCopy);   // Convert TurnsRatioCopy to string
-			u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
-
-			if ((TurnsRatio[SelectPosition[1]] - '0') == 9) {   // Check specific digit
+			int digit = (TurnsRatioCopy / pow(10, 1-(SelectPosition[1])) );
+			digit = digit % 10;
+			if (digit == 9) {   // Check specific digit
 				TurnsRatioCopy -= (90 / pow(10, SelectPosition[1]));    // Up from 9, cycle to 0
 			} else {
 				TurnsRatioCopy += (10 / pow(10, SelectPosition[1]));    // plus 10 / (10 ^ digit place). e.g. if 1st digit: 10 / 10 ^ 0 = 10 / 1 = 10
@@ -1251,12 +1252,9 @@ void TurnsRatioMenu(){
 			ButtonTurn = 1;
 		} else if ((PINB & (1<<7))) {   // Down
 			ButtonTurn = 0;
-
-			char TurnsRatio[7];
-			sprintf(TurnsRatio , "%.3f", TurnsRatioCopy);   // Convert TurnsRatioCopy to string
-			u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
-
-			if ((TurnsRatio[SelectPosition[1]] - '0') == 0) {   // Check specific digit
+			int digit = (TurnsRatioCopy / pow(10, 1-(SelectPosition[1])) );
+			digit = digit % 10;
+			if (digit == 9) {   // Check specific digit
 				TurnsRatioCopy += (90 / pow(10, SelectPosition[1]));    // Down from 0, cycle to 9
 			} else {
 				TurnsRatioCopy -= (10 / pow(10, SelectPosition[1]));    // subtract 10 / (10 ^ digit place). e.g. if 1st digit: 10 / 10 ^ 0 = 10 / 1 = 10
