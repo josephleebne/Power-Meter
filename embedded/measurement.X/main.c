@@ -160,7 +160,10 @@ volatile uint8_t areReadingsReady = 0;
 volatile uint8_t ADCSelectedChannel = 0;
 volatile uint8_t discardNextSample = 0;
 
-//cached rtc variables
+//flag for checking if AC current or dependent measurements are UL
+volatile uint8_t isUL;
+
+//cached RTC variables
 volatile rtc_time_t rtcCachedTime;
 volatile uint32_t rtcCachedSeconds = 0;
 volatile uint8_t rtcValid = 0;
@@ -623,7 +626,7 @@ float calculate_AC_voltage_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
 	float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
 	float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
     
-    float vin = ADCRMSVoltage / scalingRatio;
+    float vin = (ADCRMSVoltage / scalingRatio) * turnsRatio;
     float vinCorrected = vin * errorRatio + errorSum;
 	return vinCorrected;
 }
