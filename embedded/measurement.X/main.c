@@ -107,10 +107,10 @@ volatile uint8_t tx_tail = 0;
 #define MEAS_AC_APPARENT_POWER 14
 #define MEAS_RTC_TIME 15
 
+//FOR FREQUENCY MEASUREMENT
 #define HYSTERESIS 0.5f
-#define FREQ_AVG_COUNT 10
-#define T1_TICK_FREQ 1000000UL
-#define FREQ_CALC_CONSTANT (T1_TICK_FREQ * (uint32_t)FREQ_AVG_COUNT)
+#define FREQ_AVG_COUNT 10 //Number of cycles to be averaged
+#define T1_TICK_FREQ 125000UL //Take the clock speed of 8 million and divide by the /64 prescalar
 
 //CHANNELS
 #define NO_CHANNELS 4
@@ -424,7 +424,9 @@ void UART_transmit(char data) {
     UCSR0B |= (1 << UDRIE0);
 }
 
+//Process the tranmission of UART data
 ISR(USART_UDRE_vect) {
+    //Still more bytes to add to queue
     if (tx_head != tx_tail) {
         //Calculate next tail position
         uint8_t next_tail = (tx_tail + 1) % TX_BUFFER_SIZE;
@@ -463,6 +465,7 @@ void UART_print_float_2dp(float value) {
 	UART_print(buffer);
 }
 
+//Send the measurement array over UART
 void UART_print_measurements(float arr[NO_MEASUREMENTS]) {
 	UART_print("[");
 
@@ -479,16 +482,12 @@ void UART_print_measurements(float arr[NO_MEASUREMENTS]) {
 
 // *************************      ADC FUNCTIONS      ******************************
 
-//OCR2A triggers approx every 30ms
+//Setup timer 1, used for measuring AC frequency.
 void setup_timer1_freerun(void) {
     //Normal mode
     TCCR1A = 0; 
-    
-    //Prescaler /8
-    //At 8MHz, this means 1 tick = 1 microsecond.
-    //The timer wraps every 65,536 microseconds (~65.5ms)
-    //This is perfect for 50Hz (20ms) or 60Hz (16.6ms) signals.
-    TCCR1B = (1 << CS11);
+    // /64 prescalar, timer resets every 524ms
+    TCCR1B = (1 << CS11) | (1 << CS10);
 }
 
 void setup_ADC(void) {
@@ -511,20 +510,23 @@ void ADC_select_channel(uint8_t channel) {
 
 }
 
+//
 void handle_frequency_logic(uint16_t reading, uint8_t channel) {
     uint16_t midPoint = 512; 
 
     if (channel == AC_VOLTAGE_CHANNEL) {
-        //Detect Positive-going Zero Crossing for Voltage
+        //Detect zero Crossing for voltage
         if (lastACValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS)) {
+            //Take the timestamp of this zero crossing and calculate time from previous crossing
             uint16_t currentTime = TCNT1; 
             uint16_t duration = currentTime - lastVTimestamp;
             lastVTimestamp = currentTime;
             vCrossingTime = currentTime; 
-
+            
+            //Update the running total of periods, to be averaged
             totalPeriodAccumulator += duration;
             cycleCounter++;
-
+            
             if (cycleCounter >= FREQ_AVG_COUNT) {
                 periodTicks = totalPeriodAccumulator;
                 totalPeriodAccumulator = 0;
@@ -535,8 +537,9 @@ void handle_frequency_logic(uint16_t reading, uint8_t channel) {
     }
 
     if (channel == AC_CURRENT_HIGH_CHANNEL) {
-        // Detect Positive-going Zero Crossing for Current (for phase offset)
+        // Detect zero Crossing for current
         if (lastACCurrentValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS)) {
+            //Take the timestamp
             iCrossingTime = TCNT1;
         }
         lastACCurrentValue = reading;
@@ -680,9 +683,14 @@ float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count
 }
 
 float calculate_frequency(uint32_t ticks) {
-    if (ticks == 0) return 0.0f;
-    // (1,000,000 ticks/sec * 10 cycles) / total ticks for 10 cycles
-    return (float)FREQ_CALC_CONSTANT / (float)ticks;
+    //
+    if (ticks == 0){
+        return 0.0f;
+    }
+    
+    uint32_t freqConstant = T1_TICK_FREQ * (uint32_t)FREQ_AVG_COUNT;
+    
+    return (float)freqConstant / (float)ticks;
 }
 
 float calculate_phase_difference(uint16_t vTime, uint16_t iTime, uint32_t avgPeriodTicks, float current) {
@@ -691,13 +699,14 @@ float calculate_phase_difference(uint16_t vTime, uint16_t iTime, uint32_t avgPer
         return UNDER_LIMIT_CODE; 
     }
     
-    if (avgPeriodTicks == 0) return 0.0f;
+    if (avgPeriodTicks == 0){
+        return 0.0f;
+    }
 
     //Get the period of a single cycle from the averaged total
     float singleCycleTicks = (float)avgPeriodTicks / (float)FREQ_AVG_COUNT;
     
-    //Calculate raw difference (time between V-crossing and I-crossing)
-    //Result is in microseconds (ticks)
+    //Calculate time between Vcrossing and Icrossing
     int16_t diff = (int16_t)(iTime - vTime);
 
     //Convert time difference to degrees
@@ -719,10 +728,10 @@ float calculate_power_factor(float phase){
     if (phase == UNDER_LIMIT_CODE) {
         return UNDER_LIMIT_CODE; //Send "37" to the GUI/LCD
     }
-    
+    //Convert to radians
     float phaseRadians = phase * M_PI / 180.0f;
-    float powerFactor = cosf(phaseRadians);
     
+    float powerFactor = cosf(phaseRadians);
     return powerFactor;
 }
 
