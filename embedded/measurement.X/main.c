@@ -104,7 +104,7 @@ volatile uint8_t tx_tail = 0;
 #define MEAS_DC_POWER 11
 #define MEAS_AC_REAL_POWER 12
 #define MEAS_AC_REACTIVE_POWER 13
-#define MEAS_AC_APPARANT_POWER 14
+#define MEAS_AC_APPARENT_POWER 14
 #define MEAS_RTC_TIME 15
 
 #define HYSTERESIS 0.5f
@@ -168,7 +168,7 @@ volatile uint8_t discardNextSample = 0;
 
 //flag and definition for checking if AC current or dependent measurements are UL
 volatile uint8_t isUnderLimit; //1 for is UL, 0 for not UL
-#define UNDER_LIMIT_CODE 37 //Sending arbitrary number when UL
+#define UNDER_LIMIT_CODE 37.0f //Sending arbitrary number when UL
 #define CURRENT_UNDER_LIMIT_THRESHOLD 0.1 // when AC current is below 0.1, show UNDER_LIMIT_CODE
 
 // *************************      RTC VARIABLES      ******************************
@@ -726,14 +726,79 @@ float calculate_power_factor(float phase){
     return powerFactor;
 }
 
+float calculate_DC_power(float dcVoltage, float dcCurrent){
+
+    float dcPower = dcVoltage * dcCurrent;
+    
+    //Check for negative power
+    if (dcPower < 0.0f) {
+        return 0.0f;
+    }
+    
+    return dcPower;
+}
+
+float calculate_AC_real_power(float voltageRMS, float currentRMS, float powerFactor){
+    //Check if the AC current is UL
+    if (currentRMS == UNDER_LIMIT_CODE) {
+        return UNDER_LIMIT_CODE; //Send "37" to the GUI/LCD
+    }
+    float realPower = voltageRMS * currentRMS * powerFactor;
+    
+    //Check for negative power
+    if (realPower < 0.0f) {
+        return 0.0f;
+    }
+    
+    return realPower;
+}
+
+float calculate_AC_apparent_power(float voltageRMS, float currentRMS){
+    //Check if the AC current is UL
+    if (currentRMS == UNDER_LIMIT_CODE) {
+        return UNDER_LIMIT_CODE; //Send "37" to the GUI/LCD
+    }
+    
+    float apparentPower = voltageRMS * currentRMS;
+    
+    //Check for negative power
+    if (apparentPower < 0.0f) {
+        return 0.0f;
+    }
+    
+    return apparentPower;
+}
+
+float calculate_AC_reactive_power(float voltageRMS, float currentRMS, float phaseDifference){
+    //Check if the AC current is UL
+    if (currentRMS == UNDER_LIMIT_CODE) {
+        return UNDER_LIMIT_CODE; //Send "37" to the GUI/LCD
+    }
+    float phaseRadians = phaseDifference * M_PI / 180.0f;
+    
+    float reactivePower = voltageRMS * currentRMS * sinf(phaseRadians);
+    
+    //Check for negative power
+    if (reactivePower < 0.0f) {
+        return 0.0f;
+    }
+    
+    return reactivePower;
+}
+
 void process_measurements(float* measurements) {
     if (acDataReady) {
-        //Calculate DC voltage and current
+        //Calculate DC measurements
+        //Voltage and current
         measurements[MEAS_DC_VOLTAGE] = calculate_DC_voltage(rawDCVoltageADC);
         measurements[MEAS_DC_CURRENT] = calculate_DC_current(rawDCCurrentADC);
         
+        //DC power
+        measurements[MEAS_DC_POWER] = calculate_DC_power(measurements[MEAS_DC_VOLTAGE], measurements[MEAS_DC_CURRENT]);
         
-        //Calculate RMS voltage and current
+        
+        //Calculate RMS measurements
+        //RMS voltage and current
         measurements[MEAS_AC_VOLTAGE] = calculate_AC_voltage_RMS(acVoltageSum, acVoltageSumSq, acSampleCount);
         measurements[MEAS_AC_CURRENT_HIGH] = calculate_AC_current_high_RMS(acCurrentHighSum, acCurrentHighSumSq, acSampleCount);
         
@@ -742,7 +807,10 @@ void process_measurements(float* measurements) {
         measurements[MEAS_PHASE_DIFFERENCE] = calculate_phase_difference(vCrossingTime, iCrossingTime, periodTicks, measurements[MEAS_AC_CURRENT_HIGH]);
         measurements[MEAS_POWER_FACTOR] = calculate_power_factor(measurements[MEAS_PHASE_DIFFERENCE]);
         
-        //Calculate real, apparent, reactive power
+        //Calculate AC power (real, apparent, reactive)
+        measurements[MEAS_AC_REAL_POWER] = calculate_AC_real_power(measurements[MEAS_AC_VOLTAGE], measurements[MEAS_AC_CURRENT_HIGH], measurements[MEAS_POWER_FACTOR]);
+        measurements[MEAS_AC_REACTIVE_POWER] = calculate_AC_reactive_power(measurements[MEAS_AC_VOLTAGE], measurements[MEAS_AC_CURRENT_HIGH], measurements[MEAS_PHASE_DIFFERENCE]);
+        measurements[MEAS_AC_APPARENT_POWER] = calculate_AC_apparent_power(measurements[MEAS_AC_VOLTAGE], measurements[MEAS_AC_CURRENT_HIGH]);
         
         //Calculate pk to pk voltage and current
         
