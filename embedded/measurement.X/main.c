@@ -112,16 +112,21 @@ volatile uint8_t tx_tail = 0;
 #define T1_TICK_FREQ 1000000UL
 #define FREQ_CALC_CONSTANT (T1_TICK_FREQ * (uint32_t)FREQ_AVG_COUNT)
 
-//CHANNELS: the actual readings from the circuit
+//CHANNELS
 #define NO_CHANNELS 4
-#define DC_VOLTAGE_CHANNEL 0
-#define DC_CURRENT_CHANNEL 1
-#define AC_VOLTAGE_CHANNEL 2
-#define AC_CURRENT_HIGH_CHANNEL 3
+#define DC_VOLTAGE_CHANNEL 0 //PC0
+#define DC_CURRENT_CHANNEL 1 //PC1
+#define AC_VOLTAGE_CHANNEL 2 //PC2
+#define AC_CURRENT_HIGH_CHANNEL 3 //PC3
 
 
 // *************************      MEASUREMENT GLOBALS      ******************************
-//For frequency and phase measurement!
+//For DC voltage and current measurement
+volatile uint16_t rawDCVoltageADC = 0;
+volatile uint16_t rawDCCurrentADC = 0;
+
+
+//For frequency and phase measurement
 volatile uint32_t timer2Overflows = 0;
 volatile uint8_t timer2Flag = 0;
 volatile uint8_t LcdTick = 0;
@@ -155,27 +160,28 @@ volatile uint8_t acProcessingBusy = 0;
 volatile uint8_t acDataReady = 0;
 
 //STORED VARIABLES FOR ADC READING
-volatile uint16_t ADCReading[NO_CHANNELS];
 volatile uint8_t areReadingsReady = 0;
 volatile uint8_t ADCSelectedChannel = 0;
 volatile uint8_t discardNextSample = 0;
 
+// *************************      UNDER LIMIT DEFINITIONS/FLAGS      ******************************
+
 //flag and definition for checking if AC current or dependent measurements are UL
 volatile uint8_t isUnderLimit; //1 for is UL, 0 for not UL
 #define UNDER_LIMIT_CODE 37 //Sending arbitrary number when UL
+#define CURRENT_UNDER_LIMIT_THRESHOLD 0.1 // when AC current is below 0.1, show UNDER_LIMIT_CODE
 
-//cached RTC variables
+// *************************      RTC VARIABLES      ******************************
 volatile rtc_time_t rtcCachedTime;
 volatile uint32_t rtcCachedSeconds = 0;
 volatile uint8_t rtcValid = 0;
 volatile uint8_t rtcTimeSet = 0;
 volatile uint32_t lastRTCPoll = 0;
 
-
-//Turns ratio
+// *************************      TURNS RATIO      ******************************
 float turnsRatio = 26.788;
 
-// LCD code function prototypes
+// *************************      LCD FUNCTION PROTOTYPES      ******************************
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 void lcd_init();
@@ -192,7 +198,7 @@ void TurnsRatioMenu();
 void TurnsRatioMenuDraw();
 void DrawScreen();
 
-// active rtc prototypes
+// *************************      RTC PROTOTYPES      ******************************
 void TWI_init(void);
 uint8_t TWI_wait_for_twint(void);
 uint8_t TWI_start(uint8_t address_rw);
@@ -207,7 +213,7 @@ uint8_t DS1307_set_time(const rtc_time_t *t);
 uint32_t rtc_seconds_of_day(const rtc_time_t *t);
 uint8_t RTC_poll_and_cache(void);
 
-// LCD Global variables
+// *************************      LCD GLOBAL VARIABLES      ******************************
 u8g2_t u8g2;
 float MenuSettings[] = {0, 0, 0, 0, 4, 26.788}; // Measurement 1, Measurement 2, Measurement 3, Measurement 4, BacklightIndex, TurnsRatio
 int MenuSettingsEEPROMAddresses[] = {MEASUREMENT_1_ADDRESS, MEASUREMENT_2_ADDRESS, MEASUREMENT_3_ADDRESS, MEASUREMENT_4_ADDRESS, BACKLIGHT_ADDRESS, TURNS_RATIO_ADDRESS};
@@ -254,7 +260,7 @@ int BacklightIndexCopy = 4; // Copy of Backlight Index
 float TurnsRatioCopy = 26.788; // Copy of Transformer Turns Ratio
 int ButtonTurn = 1; // Button turn baton
 
-//RTC Functions
+// *************************      RTC FUNCTIONS      ******************************
 void TWI_init(void) {
     TWSR = 0x00;
     TWBR = 32;
@@ -392,6 +398,7 @@ uint8_t RTC_poll_and_cache(void) {
     return 0;
 }
 
+// *************************      UART FUNCTIONS      ******************************
 void UART_init(void) {
     tx_head = 0;
     tx_tail = 0;
@@ -455,6 +462,22 @@ void UART_print_float_2dp(float value) {
 	snprintf(buffer, sizeof(buffer), "%u.%02u", whole, frac);
 	UART_print(buffer);
 }
+
+void UART_print_measurements(float arr[NO_MEASUREMENTS]) {
+	UART_print("[");
+
+	for (uint8_t i = 0; i < NO_MEASUREMENTS; i++) {
+		UART_print_float_2dp(arr[i]);
+
+		if (i < NO_MEASUREMENTS - 1) {
+			UART_print(", ");
+		}
+	}
+
+	UART_print("]\r\n");
+}
+
+// *************************      ADC FUNCTIONS      ******************************
 
 //OCR2A triggers approx every 30ms
 void setup_timer1_freerun(void) {
@@ -530,12 +553,17 @@ ISR(ADC_vect) {
         return;
     }
 
-    ADCReading[channel] = reading;
-
     if (!acProcessingBusy) {
         //Calculate frequency of voltage wave
         handle_frequency_logic(reading, channel);
-
+        //Save DC ADC readings
+        if (channel == DC_VOLTAGE_CHANNEL) {
+            rawDCVoltageADC = reading;
+        }
+        else if (channel == DC_CURRENT_CHANNEL) {
+            rawDCCurrentADC = reading;
+        }
+        
         //Accumulate RMS data
         if (channel == AC_VOLTAGE_CHANNEL) {
             acVoltageSum += reading;
@@ -643,6 +671,10 @@ float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count
 	float currentRMS = (ADCRMSVoltage / scalingRatio) * currentToVoltageRatio;
     float currentRMSCorrected = currentRMS * errorRatio + errorSum;
     
+    //Send the under limit (UL) code "37" if current is below 0.1
+    if (currentRMSCorrected < CURRENT_UNDER_LIMIT_THRESHOLD){
+        currentRMSCorrected = UNDER_LIMIT_CODE; //Send "37" to the GUI/LCD
+    }
     
 	return currentRMSCorrected;
 }
@@ -653,7 +685,12 @@ float calculate_frequency(uint32_t ticks) {
     return (float)FREQ_CALC_CONSTANT / (float)ticks;
 }
 
-float calculate_phase_difference(uint16_t vTime, uint16_t iTime, uint32_t avgPeriodTicks) {
+float calculate_phase_difference(uint16_t vTime, uint16_t iTime, uint32_t avgPeriodTicks, float current) {
+    //Check if the AC current is UL
+    if (current == UNDER_LIMIT_CODE) {
+        return UNDER_LIMIT_CODE; 
+    }
+    
     if (avgPeriodTicks == 0) return 0.0f;
 
     //Get the period of a single cycle from the averaged total
@@ -666,7 +703,7 @@ float calculate_phase_difference(uint16_t vTime, uint16_t iTime, uint32_t avgPer
     //Convert time difference to degrees
     float phase = ((float)diff / singleCycleTicks) * 360.0f;
 
-    //Normalize to -180 to 180 degrees
+    //Normalise to -180 to 180 degrees
     while (phase > 180.0f){
         phase -= 360.0f;
     }
@@ -678,25 +715,73 @@ float calculate_phase_difference(uint16_t vTime, uint16_t iTime, uint32_t avgPer
 }
 
 float calculate_power_factor(float phase){
+    //Check if the AC current is UL
+    if (phase == UNDER_LIMIT_CODE) {
+        return UNDER_LIMIT_CODE; //Send "37" to the GUI/LCD
+    }
+    
     float phaseRadians = phase * M_PI / 180.0f;
     float powerFactor = cosf(phaseRadians);
     
     return powerFactor;
 }
 
-void UART_print_measurements(float arr[NO_MEASUREMENTS]) {
-	UART_print("[");
+void process_measurements(float* measurements) {
+    if (acDataReady) {
+        //Calculate DC voltage and current
+        measurements[MEAS_DC_VOLTAGE] = calculate_DC_voltage(rawDCVoltageADC);
+        measurements[MEAS_DC_CURRENT] = calculate_DC_current(rawDCCurrentADC);
+        
+        
+        //Calculate RMS voltage and current
+        measurements[MEAS_AC_VOLTAGE] = calculate_AC_voltage_RMS(acVoltageSum, acVoltageSumSq, acSampleCount);
+        measurements[MEAS_AC_CURRENT_HIGH] = calculate_AC_current_high_RMS(acCurrentHighSum, acCurrentHighSumSq, acSampleCount);
+        
+        //Calculate frequency, phase difference, and  power factor
+        measurements[MEAS_FREQUENCY] = calculate_frequency(periodTicks);
+        measurements[MEAS_PHASE_DIFFERENCE] = calculate_phase_difference(vCrossingTime, iCrossingTime, periodTicks, measurements[MEAS_AC_CURRENT_HIGH]);
+        measurements[MEAS_POWER_FACTOR] = calculate_power_factor(measurements[MEAS_PHASE_DIFFERENCE]);
+        
+        //Calculate real, apparent, reactive power
+        
+        //Calculate pk to pk voltage and current
+        
+        //Reset RMS buffers
+        cli();
+        acVoltageSum = 0;
+        acVoltageSumSq = 0;
+        acCurrentHighSum = 0;
+        acCurrentHighSumSq = 0;
+        acSampleCount = 0;
+        acDataReady = 0;
+        acProcessingBusy = 0; //Indicate we're ready
+        sei();
+    }
+    
+    uint32_t ticks;
 
-	for (uint8_t i = 0; i < NO_MEASUREMENTS; i++) {
-		UART_print_float_2dp(arr[i]);
+    cli();
+    ticks = timer2Overflows;
+    sei();
 
-		if (i < NO_MEASUREMENTS - 1) {
-			UART_print(", ");
-		}
-	}
+    if ((ticks - lastRTCPoll) >= 31)
+    {
+        lastRTCPoll = ticks;
 
-	UART_print("]\r\n");
+        RTC_poll_and_cache();
+
+        if (rtcValid && rtcTimeSet)
+        {
+            measurements[MEAS_RTC_TIME] =
+                (float)rtcCachedSeconds;
+        }
+        else
+        {
+            measurements[MEAS_RTC_TIME] = 0.0f;
+        }
+    }
 }
+
 // *****************************    LCD CODE    *********************************************
 
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr) {
@@ -1290,55 +1375,6 @@ void TurnsRatioMenu(){
 			ButtonTurn = 1;
 		}
 	}
-}
-
-void process_measurements(float* measurements) {
-    if (acDataReady) {
-        //Calculate RMS
-        measurements[MEAS_AC_VOLTAGE] = calculate_AC_voltage_RMS(acVoltageSum, acVoltageSumSq, acSampleCount);
-        measurements[MEAS_AC_CURRENT_HIGH] = calculate_AC_current_high_RMS(acCurrentHighSum, acCurrentHighSumSq, acSampleCount);
-        
-        //Calculate Power Factor and Frequency
-        float freq = calculate_frequency(periodTicks);
-        float phase = calculate_phase_difference(vCrossingTime, iCrossingTime, periodTicks);
-        measurements[MEAS_FREQUENCY] = freq;
-        measurements[MEAS_PHASE_DIFFERENCE] = phase;
-        measurements[MEAS_POWER_FACTOR] = calculate_power_factor(phase);
-
-        //Reset buffers
-        cli();
-        acVoltageSum = 0;
-        acVoltageSumSq = 0;
-        acCurrentHighSum = 0;
-        acCurrentHighSumSq = 0;
-        acSampleCount = 0;
-        acDataReady = 0;
-        acProcessingBusy = 0; //Indicate we're ready
-        sei();
-    }
-    
-    uint32_t ticks;
-
-    cli();
-    ticks = timer2Overflows;
-    sei();
-
-    if ((ticks - lastRTCPoll) >= 31)
-    {
-        lastRTCPoll = ticks;
-
-        RTC_poll_and_cache();
-
-        if (rtcValid && rtcTimeSet)
-        {
-            measurements[MEAS_RTC_TIME] =
-                (float)rtcCachedSeconds;
-        }
-        else
-        {
-            measurements[MEAS_RTC_TIME] = 0.0f;
-        }
-    }
 }
 
 // ***************    MAIN    *************************
