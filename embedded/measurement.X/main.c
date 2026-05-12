@@ -160,8 +160,9 @@ volatile uint8_t areReadingsReady = 0;
 volatile uint8_t ADCSelectedChannel = 0;
 volatile uint8_t discardNextSample = 0;
 
-//flag for checking if AC current or dependent measurements are UL
-volatile uint8_t isUL;
+//flag and definition for checking if AC current or dependent measurements are UL
+volatile uint8_t isUnderLimit; //1 for is UL, 0 for not UL
+#define UNDER_LIMIT_CODE 37 //Sending arbitrary number when UL
 
 //cached RTC variables
 volatile rtc_time_t rtcCachedTime;
@@ -641,6 +642,8 @@ float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count
 	float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
 	float currentRMS = (ADCRMSVoltage / scalingRatio) * currentToVoltageRatio;
     float currentRMSCorrected = currentRMS * errorRatio + errorSum;
+    
+    
 	return currentRMSCorrected;
 }
 
