@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 
-// *************************      CLOCK SPEED      ******************************
+// ************************      CLOCK SPEED      *****************************
 FUSES = {
     .low = 0xE2,      // LOW {SUT_CKSEL=INTRCOSC_8MHZ_6CK_14CK_65MS, CKOUT=CLEAR, CKDIV8=CLEAR}
     .high = 0xD9,     // HIGH {BOOTRST=CLEAR, BOOTSZ=2048W_3800, EESAVE=CLEAR, WDTON=CLEAR, SPIEN=SET, DWEN=CLEAR, RSTDISBL=CLEAR}
@@ -20,7 +20,7 @@ FUSES = {
 
 LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 
-// *************************      LCD DEFINES      ******************************
+// ************************      LCD DEFINES      *****************************
 #define DISPLAY_CLK_DIR DDRB
 #define DISPLAY_CLK_PORT PORTB
 #define DISPLAY_CLK_PIN 5
@@ -59,7 +59,7 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 
 #define MEASUREMENTS 15
 
-// *************************      RTC DEFINES      ******************************
+// ************************      RTC DEFINES      *****************************
 // RTC / DS1307
 #define DS1307_ADDR 0x68
 #define RTC_SET_ON_BOOT 0
@@ -76,7 +76,7 @@ typedef struct
     uint8_t clockHalted;
 } rtc_time_t;
 
-// *************************      UART COMMUNICATION      ******************************
+// *********************      UART COMMUNICATION      **************************
 #define BAUD 9600
 #define UBRR_VALUE ((F_CPU / (16UL * BAUD)) - 1)
 #define TX_BUFFER_SIZE 64
@@ -84,10 +84,13 @@ volatile char tx_buffer[TX_BUFFER_SIZE];
 volatile uint8_t tx_head = 0;
 volatile uint8_t tx_tail = 0;
 
-// *************************      MEASUREMENT DEFINES      ******************************
-// MEASUREMENTS: for measurements read from the channels, and measurements calculated from those
-#define VREF 5.0f
-#define NUM_SAMPLES 1000
+// ********************      MEASUREMENT DEFINES      *************************
+#define VREF 3.3f
+
+//Number of samples taken in one window of AC measurement
+#define NUM_AC_SAMPLES 1000
+
+//Measurement array
 #define NO_MEASUREMENTS 16
 #define MEAS_DC_VOLTAGE 0
 #define MEAS_DC_CURRENT 1
@@ -106,10 +109,31 @@ volatile uint8_t tx_tail = 0;
 #define MEAS_AC_APPARENT_POWER 14
 #define MEAS_RTC_TIME 15
 
+//Calibration values
+#define AC_VOLTAGE_ERROR_RATIO 1.0f
+#define AC_VOLTAGE_ERROR_SUM 0.0f
+
+#define AC_CURRENT_HIGH_ERROR_RATIO 1.0f
+#define AC_CURRENT_HIGH_ERROR_SUM 0.0f
+
+#define DC_VOLTAGE_ERROR_RATIO 1.0f
+#define DC_VOLTAGE_ERROR_SUM 0.0f
+
+#define DC_CURRENT_ERROR_RATIO 1.0f
+#define DC_CURRENT_ERROR_SUM 0.0f
+
+#define FREQUENCY_ERROR_RATIO 1.0f
+#define FREQUENCY_ERROR_SUM 0.0f
+
+#define PHASE_DIFFERENCE_ERROR_RATIO 1.0f
+#define PHASE_DIFFERENCE_ERROR_SUM 0.0f
+
+
 // FOR FREQUENCY MEASUREMENT
 #define HYSTERESIS 0.5f
 #define FREQ_AVG_COUNT 10     // Number of cycles to be averaged
-#define T1_TICK_FREQ 125000UL // Take the clock speed of 8 million and divide by the /64 prescalar
+// Take the clock speed of 8 million and divide by the /64 prescalar
+#define T1_TICK_FREQ 125000UL 
 
 // CHANNELS
 #define NO_CHANNELS 4
@@ -118,15 +142,11 @@ volatile uint8_t tx_tail = 0;
 #define AC_VOLTAGE_CHANNEL 2      // PC2
 #define AC_CURRENT_HIGH_CHANNEL 3 // PC3
 
-// *************************      MEASUREMENT GLOBALS      ******************************
+// ********************      MEASUREMENT GLOBALS      *************************
 // For DC voltage and current measurement
 volatile uint16_t rawDCVoltageADC = 0;
 volatile uint16_t rawDCCurrentADC = 0;
 
-// For frequency and phase measurement
-volatile uint32_t timer2Overflows = 0;
-volatile uint8_t timer2Flag = 0;
-volatile uint8_t LcdTick = 0;
 
 volatile uint32_t periodTicks = 0;
 volatile uint32_t totalPeriodAccumulator = 0;
@@ -161,24 +181,34 @@ volatile uint8_t areReadingsReady = 0;
 volatile uint8_t ADCSelectedChannel = 0;
 volatile uint8_t discardNextSample = 0;
 
-// *************************      UNDER LIMIT DEFINITIONS/FLAGS      ******************************
+//Measurement LED blinking
+volatile uint8_t isLEDOn = 0;
+volatile uint32_t ledOffTimestamp = 0;
+#define BLINK_DURATION_TICKS 6
+
+//Low Current mode
+#define LOW_CURRENT_THRESHOLD 1.0f
+uint8_t isLowCurrentModeOn = 0;
+#define LOW_CURRENT_SCALING_RATIO 0.1f
+
+// ***************      UNDER LIMIT DEFINITIONS/FLAGS      ********************
 
 // flag and definition for checking if AC current or dependent measurements are UL
 volatile uint8_t isUnderLimit;            // 1 for is UL, 0 for not UL
 #define UNDER_LIMIT_CODE 37.0f            // Sending arbitrary number when UL
 #define CURRENT_UNDER_LIMIT_THRESHOLD 0.1 // when AC current is below 0.1, show UNDER_LIMIT_CODE
 
-// *************************      RTC VARIABLES      ******************************
+// ***********************      RTC VARIABLES      ****************************
 volatile rtc_time_t rtcCachedTime;
 volatile uint32_t rtcCachedSeconds = 0;
 volatile uint8_t rtcValid = 0;
 volatile uint8_t rtcTimeSet = 0;
 volatile uint32_t lastRTCPoll = 0;
 
-// *************************      TURNS RATIO      ******************************
+// ************************      TURNS RATIO      *****************************
 float turnsRatio = 26.788;
 
-// *************************      LCD FUNCTION PROTOTYPES      ******************************
+// ******************      LCD FUNCTION PROTOTYPES      ***********************
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 void lcd_init();
@@ -256,6 +286,11 @@ int Backlight[] = {0, 64, 128, 192, 255}; // Values for OCR0B for Backlight
 int BacklightIndexCopy = 4;               // Copy of Backlight Index
 float TurnsRatioCopy = 26.788;            // Copy of Transformer Turns Ratio
 int ButtonTurn = 1;                       // Button turn baton
+
+//Timer 2 variables
+volatile uint32_t timer2Overflows = 0;
+volatile uint8_t timer2Flag = 0;
+volatile uint8_t LcdTick = 0;
 
 // *************************      RTC FUNCTIONS      ******************************
 void TWI_init(void)
@@ -592,7 +627,8 @@ void setup_timer1_freerun(void)
 {
     // Normal mode
     TCCR1A = 0;
-    // /64 prescalar, timer resets every 524ms
+    
+    //64 prescalar, timer resets every 524ms
     TCCR1B = (1 << CS11) | (1 << CS10);
 }
 
@@ -618,7 +654,7 @@ void ADC_select_channel(uint8_t channel)
     ADMUX |= channel;
 }
 
-//
+
 void handle_frequency_logic(uint16_t reading, uint8_t channel)
 {
     uint16_t midPoint = 512;
@@ -664,14 +700,16 @@ ISR(ADC_vect)
 {
     uint8_t channel = ADCSelectedChannel;
     uint16_t reading = ADC;
-
+    
+    /*
     if (discardNextSample)
     {
         discardNextSample = 0;
         ADC_start_conversion();
         return;
     }
-
+    */
+    
     if (!acProcessingBusy)
     {
         // Calculate frequency of voltage wave
@@ -699,7 +737,7 @@ ISR(ADC_vect)
             acCurrentHighSumSq += (uint32_t)reading * (uint32_t)reading;
 
             acSampleCount++;
-            if (acSampleCount >= NUM_SAMPLES)
+            if (acSampleCount >= NUM_AC_SAMPLES)
             {
                 acDataReady = 1;
                 acProcessingBusy = 1;
@@ -725,14 +763,12 @@ float calculate_DC_voltage(uint16_t ADCreading)
 {
 
     float scalingRatio = (4.724f / 10.0f);
-    float errorRatio = 1.681f;
-    float errorSum = 0.080f;
 
     // Set convert ADC reading into voltage
     float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
 
     float vin = (scaledVout / scalingRatio);
-    float vinCorrected = vin * errorRatio + errorSum;
+    float vinCorrected = vin * DC_VOLTAGE_ERROR_RATIO + DC_VOLTAGE_ERROR_SUM;
     return vinCorrected;
 }
 
@@ -741,16 +777,14 @@ float calculate_DC_current(uint16_t ADCreading)
 {
 
     float scalingRatio = 1.0f;
-    float errorRatio = 1.954f;
-    float errorSum = 0.023f;
 
     // Set convert ADC reading into voltage
     float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
 
-    float vin = (scaledVout / scalingRatio);
-    float vinCorrected = vin * errorRatio + errorSum;
+    float iIn = (scaledVout / scalingRatio);
+    float iInCorrected = iIn * DC_CURRENT_ERROR_RATIO + DC_CURRENT_ERROR_SUM;
 
-    return vinCorrected;
+    return iInCorrected;
 }
 
 float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count)
@@ -782,14 +816,12 @@ float ADC_counts_to_volts(float ADCCounts)
 float calculate_AC_voltage_RMS(uint32_t sum, uint32_t sumSq, uint16_t count)
 {
     float scalingRatio = (1.4f / 14.14f);
-    float errorRatio = 0.649f;
-    float errorSum = -0.004f;
 
     float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
     float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
 
     float vin = (ADCRMSVoltage / scalingRatio) * turnsRatio;
-    float vinCorrected = vin * errorRatio + errorSum;
+    float vinCorrected = vin * AC_VOLTAGE_ERROR_RATIO + AC_VOLTAGE_ERROR_SUM;
     return vinCorrected;
 }
 
@@ -797,13 +829,11 @@ float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count
 {
     float scalingRatio = 1.0f;
     float currentToVoltageRatio = 10.0f;
-    float errorRatio = 0.866f;
-    float errorSum = -0.096f;
 
     float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
     float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
     float currentRMS = (ADCRMSVoltage / scalingRatio) * currentToVoltageRatio;
-    float currentRMSCorrected = currentRMS * errorRatio + errorSum;
+    float currentRMSCorrected = currentRMS * AC_CURRENT_HIGH_ERROR_RATIO + AC_CURRENT_HIGH_ERROR_SUM;
 
     // Send the under limit (UL) code "37" if current is below 0.1
     if (currentRMSCorrected < CURRENT_UNDER_LIMIT_THRESHOLD)
@@ -812,6 +842,22 @@ float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count
     }
 
     return currentRMSCorrected;
+}
+
+uint8_t check_low_current_mode(float current){
+    
+    //If current is below 1A, turn on low current mode, mux select low current circuit
+    if (current < LOW_CURRENT_THRESHOLD){
+        PORTD |= (1 << PORTD2);
+        isLowCurrentModeOn = 1;
+    }
+    
+    //Otherwise, turn off low current mode, mux select the high current circuit
+    else{
+        PORTD &= ~(1 << PORTD2);
+        isLowCurrentModeOn = 0;
+    }
+    return isLowCurrentModeOn;
 }
 
 float calculate_frequency(uint32_t ticks)
@@ -823,8 +869,10 @@ float calculate_frequency(uint32_t ticks)
     }
 
     uint32_t freqConstant = T1_TICK_FREQ * (uint32_t)FREQ_AVG_COUNT;
+    float freq = (float)freqConstant / (float)ticks;
+    float freqCorrected = freq * FREQUENCY_ERROR_RATIO + FREQUENCY_ERROR_SUM;
 
-    return (float)freqConstant / (float)ticks;
+    return freqCorrected;
 }
 
 float calculate_phase_difference(uint16_t vTime, uint16_t iTime, uint32_t avgPeriodTicks, float current)
@@ -947,10 +995,59 @@ float calculate_AC_reactive_power(float voltageRMS, float currentRMS, float phas
     return reactivePower;
 }
 
-void process_measurements(float *measurements)
+void init_MCU_GPIO(){
+    //Use D3 to blink LED when a new measurement is taken
+    DDRD |= 1 << PORTD3;
+    
+    //Use D2 to control the mux
+    DDRD |= 1 << PORTD2;
+}
+
+void check_measurement_LED(){
+    //If its time to turn the LED off AND the led is on,
+    if (isLEDOn && timer2Overflows >= ledOffTimestamp){ //Every ~100ms
+        //Turn off LED
+        PORTD &= ~(1 << PORTD3);
+        isLEDOn = 0;
+    }
+}
+
+void trigger_measurement_LED(void) {
+    PORTD |= (1 << PORTD3); //Turn LED on
+    
+    //Set timestamp for ~100ms in the future
+    ledOffTimestamp = timer2Overflows + BLINK_DURATION_TICKS; 
+    isLEDOn = 1;
+}
+
+uint8_t process_measurements(float *measurements)
 {
+    uint8_t processedNewWindow = 0;
+    
     if (acDataReady)
     {
+        cli();
+        //RMS Voltage and current local snapshots 
+        uint32_t localVSum   = acVoltageSum;
+        uint32_t localVSumSq = acVoltageSumSq;
+        uint32_t localISum   = acCurrentHighSum;
+        uint32_t localISumSq = acCurrentHighSumSq;
+        uint16_t localSamples = acSampleCount;
+        
+        //Frequency and Phase local timing snapshots
+        uint32_t localPeriodTicks = periodTicks;
+        uint16_t localVCrossing   = vCrossingTime;
+        uint16_t localICrossing   = iCrossingTime;
+
+        acVoltageSum = 0;
+        acVoltageSumSq = 0;
+        acCurrentHighSum = 0;
+        acCurrentHighSumSq = 0;
+        acSampleCount = 0;
+        acDataReady = 0;
+        acProcessingBusy = 0; 
+        sei();
+        
         // Calculate DC measurements
         // Voltage and current
         measurements[MEAS_DC_VOLTAGE] = calculate_DC_voltage(rawDCVoltageADC);
@@ -961,12 +1058,20 @@ void process_measurements(float *measurements)
 
         // Calculate RMS measurements
         // RMS voltage and current
-        measurements[MEAS_AC_VOLTAGE] = calculate_AC_voltage_RMS(acVoltageSum, acVoltageSumSq, acSampleCount);
-        measurements[MEAS_AC_CURRENT_HIGH] = calculate_AC_current_high_RMS(acCurrentHighSum, acCurrentHighSumSq, acSampleCount);
-
+        measurements[MEAS_AC_VOLTAGE] = calculate_AC_voltage_RMS(localVSum, localVSumSq, localSamples);
+        
+        float currentRMS = calculate_AC_current_high_RMS(localISum, localISumSq, localSamples);
+        if (isLowCurrentModeOn){
+            measurements[MEAS_AC_CURRENT_HIGH] = currentRMS * LOW_CURRENT_SCALING_RATIO;
+        }
+        else{
+            measurements[MEAS_AC_CURRENT_HIGH] = currentRMS;
+        }
+        measurements[MEAS_AC_CURRENT_LOW] = isLowCurrentModeOn; //Temporarily use this array item to store the current mode. Will change the name later
+        
         // Calculate frequency, phase difference, and  power factor
-        measurements[MEAS_FREQUENCY] = calculate_frequency(periodTicks);
-        measurements[MEAS_PHASE_DIFFERENCE] = calculate_phase_difference(vCrossingTime, iCrossingTime, periodTicks, measurements[MEAS_AC_CURRENT_HIGH]);
+        measurements[MEAS_FREQUENCY] = calculate_frequency(localPeriodTicks);
+        measurements[MEAS_PHASE_DIFFERENCE] = calculate_phase_difference(localVCrossing, localICrossing, localPeriodTicks, measurements[MEAS_AC_CURRENT_HIGH]);
         measurements[MEAS_POWER_FACTOR] = calculate_power_factor(measurements[MEAS_PHASE_DIFFERENCE]);
 
         // Calculate AC power (real, apparent, reactive)
@@ -975,19 +1080,11 @@ void process_measurements(float *measurements)
         measurements[MEAS_AC_APPARENT_POWER] = calculate_AC_apparent_power(measurements[MEAS_AC_VOLTAGE], measurements[MEAS_AC_CURRENT_HIGH]);
 
         // Calculate pk to pk voltage and current
-
-        // Reset RMS buffers
-        cli();
-        acVoltageSum = 0;
-        acVoltageSumSq = 0;
-        acCurrentHighSum = 0;
-        acCurrentHighSumSq = 0;
-        acSampleCount = 0;
-        acDataReady = 0;
-        acProcessingBusy = 0; // Indicate we're ready
-        sei();
+        
+        processedNewWindow = 1;
     }
-
+    
+    //RTC Polling
     uint32_t ticks;
 
     cli();
@@ -1010,6 +1107,7 @@ void process_measurements(float *measurements)
             measurements[MEAS_RTC_TIME] = 0.0f;
         }
     }
+    return processedNewWindow;
 }
 
 // *****************************    LCD CODE    *********************************************
@@ -1146,18 +1244,18 @@ void setup_timer2(void)
     // Set for ~32ms interval at 8MHz
     // 8,000,000 / 1024 (prescaler) / 250 (OCR2A) = 31.25 Hz
     OCR2A = 249;
-    // /1024 prescaler
+    //1024 prescaler
     TCCR2B = (1 << CS22) | (1 << CS21) | (1 << CS20);
 
-    // Enable interrupt
+    //Enable interrupt
     TIMSK2 |= (1 << OCIE2A);
 }
-// 2. Update the Timer2 ISR
+
 ISR(TIMER2_COMPA_vect)
 {
-    timer2Flag = 1;    // Used for your internal timing logic
-    timer2Overflows++; // Used for your current timestamping
-    LcdTick = 1;       // Now the LCD refreshes from here!
+    timer2Flag = 1;
+    timer2Overflows++;
+    LcdTick = 1;
 }
 
 void lcd_init(void)
@@ -1750,6 +1848,7 @@ int main(void)
     lcd_init();
     init();
     UART_init();
+    init_MCU_GPIO();
 
     // This array will be sent via serial
     float measurements[NO_MEASUREMENTS] = {UNDER_LIMIT_CODE};
@@ -1777,8 +1876,12 @@ int main(void)
     while (1)
     {
         // Process new measurement data if the window is ready
-        process_measurements(measurements);
-        UART_print_measurements(measurements);
+        check_measurement_LED();
+        if (process_measurements(measurements)){
+            UART_print_measurements(measurements);
+            trigger_measurement_LED();
+        }
+        check_low_current_mode(measurements[MEAS_AC_CURRENT_HIGH]);
 
         // *************************      LCD CODE      ******************************
 
