@@ -91,23 +91,22 @@ volatile uint8_t tx_tail = 0;
 #define NUM_AC_SAMPLES 1000
 
 //Measurement array
-#define NO_MEASUREMENTS 16
+#define NO_MEASUREMENTS 15
 #define MEAS_DC_VOLTAGE 0
 #define MEAS_DC_CURRENT 1
 #define MEAS_AC_VOLTAGE 2
-#define MEAS_AC_CURRENT_HIGH 3
-#define MEAS_AC_CURRENT_LOW 4
+#define MEAS_AC_CURRENT 3
+#define MEAS_IS_LOW_CURRENT_MODE 4
 #define MEAS_AC_VOLTAGE_VPP 5
-#define MEAS_AC_CURRENT_HIGH_VPP 6
-#define MEAS_AC_CURRENT_LOW_VPP 7
-#define MEAS_PHASE_DIFFERENCE 8
-#define MEAS_POWER_FACTOR 9
-#define MEAS_FREQUENCY 10
-#define MEAS_DC_POWER 11
-#define MEAS_AC_REAL_POWER 12
-#define MEAS_AC_REACTIVE_POWER 13
-#define MEAS_AC_APPARENT_POWER 14
-#define MEAS_RTC_TIME 15
+#define MEAS_AC_CURRENT_VPP 6
+#define MEAS_PHASE_DIFFERENCE 7
+#define MEAS_POWER_FACTOR 8
+#define MEAS_FREQUENCY 9
+#define MEAS_DC_POWER 10
+#define MEAS_AC_REAL_POWER 11
+#define MEAS_AC_REACTIVE_POWER 12
+#define MEAS_AC_APPARENT_POWER 13
+#define MEAS_RTC_TIME 14
 
 //Calibration values
 #define AC_VOLTAGE_ERROR_RATIO 1.0f
@@ -115,6 +114,9 @@ volatile uint8_t tx_tail = 0;
 
 #define AC_CURRENT_HIGH_ERROR_RATIO 1.0f
 #define AC_CURRENT_HIGH_ERROR_SUM 0.0f
+
+#define AC_CURRENT_LOW_ERROR_RATIO 1.0f
+#define AC_CURRENT_LOW_ERROR_SUM 0.0f
 
 #define DC_VOLTAGE_ERROR_RATIO 1.0f
 #define DC_VOLTAGE_ERROR_SUM 0.0f
@@ -140,7 +142,7 @@ volatile uint8_t tx_tail = 0;
 #define DC_VOLTAGE_CHANNEL 0      // PC0
 #define DC_CURRENT_CHANNEL 1      // PC1
 #define AC_VOLTAGE_CHANNEL 2      // PC2
-#define AC_CURRENT_HIGH_CHANNEL 3 // PC3
+#define AC_CURRENT_CHANNEL 3 // PC3
 
 // ********************      MEASUREMENT GLOBALS      *************************
 // For DC voltage and current measurement
@@ -166,11 +168,11 @@ volatile uint32_t acVoltageSumSq = 0;
 volatile uint16_t acVoltageMin = 1023;
 volatile uint16_t acVoltageMax = 0;
 
-// FOR AC CURRENT - HIGH
-volatile uint32_t acCurrentHighSum = 0;
-volatile uint32_t acCurrentHighSumSq = 0;
-volatile uint16_t acCurrentHighMin = 1023;
-volatile uint16_t acCurrentHighMax = 0;
+// FOR AC CURRENT
+volatile uint32_t acCurrentSum = 0;
+volatile uint32_t acCurrentSumSq = 0;
+volatile uint16_t acCurrentMin = 1023;
+volatile uint16_t acCurrentMax = 0;
 
 volatile uint16_t acSampleCount = 0;
 volatile uint8_t acProcessingBusy = 0;
@@ -187,9 +189,9 @@ volatile uint32_t ledOffTimestamp = 0;
 #define BLINK_DURATION_TICKS 6
 
 //Low Current mode
-#define LOW_CURRENT_THRESHOLD 1.0f
-uint8_t isLowCurrentModeOn = 0;
-#define LOW_CURRENT_SCALING_RATIO 0.1f
+#define LOW_CURRENT_THRESHOLD 1.0f //Low current mode turns on below 1A
+uint8_t isLowCurrentMode = 0; //0 means high current mode, 1 means low current mode
+#define LOW_CURRENT_SCALING_RATIO 0.1f //Current between 0-1A is amplified 10x
 
 // ***************      UNDER LIMIT DEFINITIONS/FLAGS      ********************
 
@@ -245,7 +247,7 @@ u8g2_t u8g2;
 float MenuSettings[] = {0, 0, 0, 0, 4, 26.788}; // Measurement 1, Measurement 2, Measurement 3, Measurement 4, BacklightIndex, TurnsRatio
 int MenuSettingsEEPROMAddresses[] = {MEASUREMENT_1_ADDRESS, MEASUREMENT_2_ADDRESS, MEASUREMENT_3_ADDRESS, MEASUREMENT_4_ADDRESS, BACKLIGHT_ADDRESS, TURNS_RATIO_ADDRESS};
 
-/*
+/* Not correct anymore, see zulip for updated array format
 DC Voltage,
 DC Current,
 AC Voltage RMS,
@@ -684,7 +686,7 @@ void handle_frequency_logic(uint16_t reading, uint8_t channel)
         lastACValue = reading;
     }
 
-    if (channel == AC_CURRENT_HIGH_CHANNEL)
+    if (channel == AC_CURRENT_CHANNEL)
     {
         // Detect zero Crossing for current
         if (lastACCurrentValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS))
@@ -731,10 +733,10 @@ ISR(ADC_vect)
             acVoltageSumSq += (uint32_t)reading * (uint32_t)reading;
         }
 
-        if (channel == AC_CURRENT_HIGH_CHANNEL)
+        if (channel == AC_CURRENT_CHANNEL)
         {
-            acCurrentHighSum += reading;
-            acCurrentHighSumSq += (uint32_t)reading * (uint32_t)reading;
+            acCurrentSum += reading;
+            acCurrentSumSq += (uint32_t)reading * (uint32_t)reading;
 
             acSampleCount++;
             if (acSampleCount >= NUM_AC_SAMPLES)
@@ -825,7 +827,7 @@ float calculate_AC_voltage_RMS(uint32_t sum, uint32_t sumSq, uint16_t count)
     return vinCorrected;
 }
 
-float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count)
+float calculate_AC_current_RMS(uint32_t sum, uint32_t sumSq, uint16_t count)
 {
     float scalingRatio = 1.0f;
     float currentToVoltageRatio = 10.0f;
@@ -849,15 +851,15 @@ uint8_t check_low_current_mode(float current){
     //If current is below 1A, turn on low current mode, mux select low current circuit
     if (current < LOW_CURRENT_THRESHOLD){
         PORTD |= (1 << PORTD2);
-        isLowCurrentModeOn = 1;
+        isLowCurrentMode = 1;
     }
     
     //Otherwise, turn off low current mode, mux select the high current circuit
     else{
         PORTD &= ~(1 << PORTD2);
-        isLowCurrentModeOn = 0;
+        isLowCurrentMode = 0;
     }
-    return isLowCurrentModeOn;
+    return isLowCurrentMode;
 }
 
 float calculate_frequency(uint32_t ticks)
@@ -1030,8 +1032,8 @@ uint8_t process_measurements(float *measurements)
         //RMS Voltage and current local snapshots 
         uint32_t localVSum   = acVoltageSum;
         uint32_t localVSumSq = acVoltageSumSq;
-        uint32_t localISum   = acCurrentHighSum;
-        uint32_t localISumSq = acCurrentHighSumSq;
+        uint32_t localISum   = acCurrentSum;
+        uint32_t localISumSq = acCurrentSumSq;
         uint16_t localSamples = acSampleCount;
         
         //Frequency and Phase local timing snapshots
@@ -1041,8 +1043,8 @@ uint8_t process_measurements(float *measurements)
 
         acVoltageSum = 0;
         acVoltageSumSq = 0;
-        acCurrentHighSum = 0;
-        acCurrentHighSumSq = 0;
+        acCurrentSum = 0;
+        acCurrentSumSq = 0;
         acSampleCount = 0;
         acDataReady = 0;
         acProcessingBusy = 0; 
@@ -1060,24 +1062,24 @@ uint8_t process_measurements(float *measurements)
         // RMS voltage and current
         measurements[MEAS_AC_VOLTAGE] = calculate_AC_voltage_RMS(localVSum, localVSumSq, localSamples);
         
-        float currentRMS = calculate_AC_current_high_RMS(localISum, localISumSq, localSamples);
-        if (isLowCurrentModeOn){
-            measurements[MEAS_AC_CURRENT_HIGH] = currentRMS * LOW_CURRENT_SCALING_RATIO;
+        float currentRMS = calculate_AC_current_RMS(localISum, localISumSq, localSamples);
+        if (isLowCurrentMode){
+            measurements[MEAS_AC_CURRENT] = currentRMS * LOW_CURRENT_SCALING_RATIO * AC_CURRENT_LOW_ERROR_RATIO + AC_CURRENT_LOW_ERROR_SUM;
         }
         else{
-            measurements[MEAS_AC_CURRENT_HIGH] = currentRMS;
+            measurements[MEAS_AC_CURRENT] = currentRMS;
         }
-        measurements[MEAS_AC_CURRENT_LOW] = isLowCurrentModeOn; //Temporarily use this array item to store the current mode. Will change the name later
+        measurements[MEAS_IS_LOW_CURRENT_MODE] = isLowCurrentMode;
         
         // Calculate frequency, phase difference, and  power factor
         measurements[MEAS_FREQUENCY] = calculate_frequency(localPeriodTicks);
-        measurements[MEAS_PHASE_DIFFERENCE] = calculate_phase_difference(localVCrossing, localICrossing, localPeriodTicks, measurements[MEAS_AC_CURRENT_HIGH]);
+        measurements[MEAS_PHASE_DIFFERENCE] = calculate_phase_difference(localVCrossing, localICrossing, localPeriodTicks, measurements[MEAS_AC_CURRENT]);
         measurements[MEAS_POWER_FACTOR] = calculate_power_factor(measurements[MEAS_PHASE_DIFFERENCE]);
 
         // Calculate AC power (real, apparent, reactive)
-        measurements[MEAS_AC_REAL_POWER] = calculate_AC_real_power(measurements[MEAS_AC_VOLTAGE], measurements[MEAS_AC_CURRENT_HIGH], measurements[MEAS_POWER_FACTOR]);
-        measurements[MEAS_AC_REACTIVE_POWER] = calculate_AC_reactive_power(measurements[MEAS_AC_VOLTAGE], measurements[MEAS_AC_CURRENT_HIGH], measurements[MEAS_PHASE_DIFFERENCE]);
-        measurements[MEAS_AC_APPARENT_POWER] = calculate_AC_apparent_power(measurements[MEAS_AC_VOLTAGE], measurements[MEAS_AC_CURRENT_HIGH]);
+        measurements[MEAS_AC_REAL_POWER] = calculate_AC_real_power(measurements[MEAS_AC_VOLTAGE], measurements[MEAS_AC_CURRENT], measurements[MEAS_POWER_FACTOR]);
+        measurements[MEAS_AC_REACTIVE_POWER] = calculate_AC_reactive_power(measurements[MEAS_AC_VOLTAGE], measurements[MEAS_AC_CURRENT], measurements[MEAS_PHASE_DIFFERENCE]);
+        measurements[MEAS_AC_APPARENT_POWER] = calculate_AC_apparent_power(measurements[MEAS_AC_VOLTAGE], measurements[MEAS_AC_CURRENT]);
 
         // Calculate pk to pk voltage and current
         
@@ -1881,7 +1883,7 @@ int main(void)
             UART_print_measurements(measurements);
             trigger_measurement_LED();
         }
-        check_low_current_mode(measurements[MEAS_AC_CURRENT_HIGH]);
+        check_low_current_mode(measurements[MEAS_AC_CURRENT]);
 
         // *************************      LCD CODE      ******************************
 
