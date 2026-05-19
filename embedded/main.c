@@ -1,15 +1,6 @@
-#include <avr/io.h>
-
-FUSES = {
-	.low = 0xE2, // LOW {SUT_CKSEL=INTRCOSC_8MHZ_6CK_14CK_65MS, CKOUT=CLEAR, CKDIV8=CLEAR}
-	.high = 0xD9, // HIGH {BOOTRST=CLEAR, BOOTSZ=2048W_3800, EESAVE=CLEAR, WDTON=CLEAR, SPIEN=SET, DWEN=CLEAR, RSTDISBL=CLEAR}
-	.extended = 0xFF, // EXTENDED {BODLEVEL=DISABLED}
-};
-
-LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
-
+// *************************      INCLUDES      ******************************
 #define F_CPU 8000000UL
-
+#include <avr/io.h>
 #include "u8g2.h"
 #include <util/delay.h>
 #include <math.h>
@@ -20,6 +11,18 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 #include <stdlib.h>
 #include <stdint.h>
 
+// *************************      CLOCK SPEED      ******************************
+FUSES = {
+	.low = 0xE2, // LOW {SUT_CKSEL=INTRCOSC_8MHZ_6CK_14CK_65MS, CKOUT=CLEAR, CKDIV8=CLEAR}
+	.high = 0xD9, // HIGH {BOOTRST=CLEAR, BOOTSZ=2048W_3800, EESAVE=CLEAR, WDTON=CLEAR, SPIEN=SET, DWEN=CLEAR, RSTDISBL=CLEAR}
+	.extended = 0xFF, // EXTENDED {BODLEVEL=DISABLED}
+};
+
+LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
+
+
+
+// *************************      LCD DEFINES      ******************************
 #define DISPLAY_CLK_DIR DDRB
 #define DISPLAY_CLK_PORT PORTB
 #define DISPLAY_CLK_PIN 5
@@ -56,8 +59,9 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 #define BACKLIGHT_ADDRESS 4
 #define TURNS_RATIO_ADDRESS 5
 
-#define MEASUREMENTS 16
+#define MEASUREMENTS 15
 
+// *************************      RTC DEFINES      ******************************
 //RTC / DS1307
 #define DS1307_ADDR 0x68
 #define RTC_SET_ON_BOOT 0
@@ -73,10 +77,15 @@ typedef struct {
     uint8_t clockHalted;
 } rtc_time_t;
 
-//UART COMMUNICATION
+// *************************      UART COMMUNICATION      ******************************
 #define BAUD 9600
 #define UBRR_VALUE ((F_CPU / (16UL * BAUD)) - 1)
+#define TX_BUFFER_SIZE 64
+volatile char tx_buffer[TX_BUFFER_SIZE];
+volatile uint8_t tx_head = 0;
+volatile uint8_t tx_tail = 0;
 
+// *************************      MEASUREMENT DEFINES      ******************************
 //MEASUREMENTS: for measurements read from the channels, and measurements calculated from those
 #define VREF 5.0f
 #define NUM_SAMPLES 1000
@@ -103,13 +112,20 @@ typedef struct {
 #define T1_TICK_FREQ 1000000UL
 #define FREQ_CALC_CONSTANT (T1_TICK_FREQ * (uint32_t)FREQ_AVG_COUNT)
 
+//CHANNELS: the actual readings from the circuit
+#define NO_CHANNELS 4
+#define DC_VOLTAGE_CHANNEL 0
+#define DC_CURRENT_CHANNEL 1
+#define AC_VOLTAGE_CHANNEL 2
+#define AC_CURRENT_HIGH_CHANNEL 3
+
+
+// *************************      MEASUREMENT GLOBALS      ******************************
+//For frequency and phase measurement!
 volatile uint32_t timer2Overflows = 0;
 volatile uint8_t timer2Flag = 0;
+volatile uint8_t timer2LCDRefreshCounter = 0;
 volatile uint8_t LcdTick = 0;
-
-// UART fixed-rate sending (~1 second)
-volatile uint8_t uartSendTick = 0;
-volatile uint8_t uartSendFlag = 0;
 
 volatile uint32_t periodTicks = 0;
 volatile uint32_t totalPeriodAccumulator = 0;
@@ -122,44 +138,56 @@ volatile uint16_t lastVTimestamp = 0;
 volatile uint16_t vCrossingTime = 0;
 volatile uint16_t iCrossingTime = 0;
 
-//CHANNELS: the actual readings from the circuit
-#define NO_CHANNELS 4
-#define DC_VOLTAGE_CHANNEL 0
-#define DC_CURRENT_CHANNEL 1
-#define AC_VOLTAGE_CHANNEL 2
-#define AC_CURRENT_HIGH_CHANNEL 3
+//STORED VARAIBLES FOR RMS MEASUREMENT
+//FOR AC VOLTAGE
+volatile uint32_t acVoltageSum = 0;
+volatile uint32_t acVoltageSumSq = 0;
+volatile uint16_t acVoltageMin = 1023;
+volatile uint16_t acVoltageMax = 0;
+
+//FOR AC CURRENT - HIGH
+volatile uint32_t acCurrentHighSum = 0;
+volatile uint32_t acCurrentHighSumSq = 0;
+volatile uint16_t acCurrentHighMin = 1023;
+volatile uint16_t acCurrentHighMax = 0;
+
+volatile uint16_t acSampleCount = 0;
+volatile uint8_t acProcessingBusy = 0;
+volatile uint8_t acDataReady = 0;
+
+//STORED VARIABLES FOR ADC READING
+volatile uint16_t ADCReading[NO_CHANNELS];
+volatile uint8_t areReadingsReady = 0;
+volatile uint8_t ADCSelectedChannel = 0;
+volatile uint8_t discardNextSample = 0;
+
+//cached rtc variables
+volatile rtc_time_t rtcCachedTime;
+volatile uint32_t rtcCachedSeconds = 0;
+volatile uint8_t rtcValid = 0;
+volatile uint8_t rtcTimeSet = 0;
+volatile uint32_t lastRTCPoll = 0;
+
 
 //Turns ratio
 float turnsRatio = 26.788;
 
+// LCD code function prototypes
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr);
 void lcd_init();
 void init();
 void DrawPCIcon();
 void DrawTime();
-void MainScreenDraw(float* measurements);
+void MainScreenDraw(float* measurements); //LCD code slightly changed by joe
 void MainScreen(float* measurements);
 void MeasurementSelectDraw(void);
-void MeasurementSelect();
+void MeasurementSelect(float* measurements);
 void SettingsDraw();
-void Settings();
+void Settings(float* measurements);
 void TurnsRatioMenu();
 void TurnsRatioMenuDraw();
 void DrawScreen();
-
-////For I2C and RTC
-//void TWI_init(void);
-//uint8_t TWI_start(uint8_t address_rw);
-//void TWI_stop(void);
-//uint8_t TWI_write(uint8_t data);
-//uint8_t TWI_read_ack(void);
-//uint8_t TWI_read_nack(void);
-//uint8_t bcd_to_dec(uint8_t bcd);
-//uint8_t dec_to_bcd(uint8_t dec);
-//uint8_t DS1307_read_time(rtc_time_t *t);
-//uint8_t DS1307_set_time(const rtc_time_t *t);
-//uint32_t rtc_seconds_of_day(const rtc_time_t *t);
 
 // active rtc prototypes
 void TWI_init(void);
@@ -176,32 +204,31 @@ uint8_t DS1307_set_time(const rtc_time_t *t);
 uint32_t rtc_seconds_of_day(const rtc_time_t *t);
 uint8_t RTC_poll_and_cache(void);
 
-// Global variables
+// LCD Global variables
 u8g2_t u8g2;
-float MenuSettings[] = {0, 0, 0, 0, 4, 1}; // Measurement 1, Measurement 2, Measurement 3, Measurement 4, BacklightIndex, TurnsRatio
+float MenuSettings[] = {0, 0, 0, 0, 4, 26.788}; // Measurement 1, Measurement 2, Measurement 3, Measurement 4, BacklightIndex, TurnsRatio
 int MenuSettingsEEPROMAddresses[] = {MEASUREMENT_1_ADDRESS, MEASUREMENT_2_ADDRESS, MEASUREMENT_3_ADDRESS, MEASUREMENT_4_ADDRESS, BACKLIGHT_ADDRESS, TURNS_RATIO_ADDRESS};
 
 /*
 DC Voltage,
-DC Current,
-AC Voltage RMS,
-AC Current (high current mode) RMS,
-AC Current (low current mode) RMS,
-AC Voltage Vpp,
-AC Current (high current mode) Vpp,
-AC Current (low current mode) Vpp,
-phase difference,
-power factor,
-frequency,
-DC power,
-AC real power,
-AC reactive power,
-AC apparent power,
-RTC time (seconds since midnight)
-*/
+DC Current, 
+AC Voltage RMS, 
+AC Current (high current mode) RMS, 
+AC Current (low current mode) RMS, 
+AC Voltage Vpp, 
+AC Current (high current mode) Vpp, 
+AC Current (low current mode) Vpp, 
+        phase difference, 
+        power factor, 
+        frequency, 
+        DC power, 
+        AC real power, 
+        AC reactive power, 
+        AC apparent power
+   */     
 
 //char* MeasurementName[13] = {"DCV (V)","DCC (A)","DCP (W)","ACV (V)","ACC (A)","ACF (Hz)","ACPD (Degrees)","ACP (W)","ACRP (VAR)","ACAP (VA)", "ACPF","ACPV (V)","ACPC (A)"};
-char* MeasurementName[16] = {"DCV (V)",
+char* MeasurementName[15] = {"DCV (V)",
 	"DCC (A)",
 	"ACV (V)",
 	"ACCH (A)",
@@ -215,172 +242,16 @@ char* MeasurementName[16] = {"DCV (V)",
 	"DCP (W)",
 	"ACRP (W)",
 	"ACRRP (W)",
-	"ACAP (W)",
-    "RTC (s)"};
+	"ACAP (W)"};
 
-int Menu; // 0 = main screen, 1 = measurement select, 2 = settings, 3 = edit turns ratio
+int Menu = 0; // 0 = main screen, 1 = measurement select, 2 = settings, 3 = edit turns ratio
 int SelectPosition[2]; // 0 = row position for the main screen, 1 = secondary position used for other menus
-int ButtonTurn = 1; // Button turn baton
 int Backlight[] = {0, 64, 128, 192, 255}; // Values for OCR0B for Backlight
-int BacklightIndexCopy; // Copy of Backlight Index
-float TurnsRatioCopy; // Copy of Transformer Turns Ratio
+int BacklightIndexCopy = 4; // Copy of Backlight Index
+float TurnsRatioCopy = 26.788; // Copy of Transformer Turns Ratio
+int ButtonTurn = 1; // Button turn baton
 
-//GLOBAL VARIABLES
-//STORED VARAIBLES FOR RMS MEASUREMENT
-//FOR AC VOLTAGE
-volatile uint32_t acVoltageSum = 0;
-volatile uint32_t acVoltageSumSq = 0;
-volatile uint16_t acVoltageMin = 1023;
-volatile uint16_t acVoltageMax = 0;
-
-//FOR AC CURRENT - HIGH
-volatile uint32_t acCurrentHighSum = 0;
-volatile uint32_t acCurrentHighSumSq = 0;
-volatile uint16_t acCurrentHighMin = 1023;
-volatile uint16_t acCurrentHighMax = 0;
-
-//FOR AC CURRENT - LOW
-volatile uint32_t acCurrentLowSum = 0;
-volatile uint32_t acCurrentLowSumSq = 0;
-volatile uint16_t acCurrentLowMin = 1023;
-volatile uint16_t acCurrentLowMax = 0;
-
-volatile uint16_t acSampleCount = 0;
-volatile uint8_t acWindowReady = 0;
-
-//STORED VARIABLES FOR ADC READING
-volatile uint16_t ADCReading[NO_CHANNELS];
-volatile uint8_t areReadingsReady = 0;
-volatile uint8_t ADCSelectedChannel = 0;
-volatile uint8_t discardNextSample = 0;
-
-// cached rtc
-volatile rtc_time_t rtcCachedTime;
-volatile uint32_t rtcCachedSeconds = 0;
-volatile uint8_t rtcValid = 0;
-volatile uint8_t rtcTimeSet = 0;
-
-//void TWI_init(void) {
-//    TWSR = 0x00;      // Prescaler = 1
-//    TWBR = 32;        // Approx 100kHz when F_CPU = 8MHz
-//    TWCR = (1 << TWEN);
-//}
-//
-//uint8_t TWI_start(uint8_t address_rw) {
-//    TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN);
-//    while (!(TWCR & (1 << TWINT))) {
-//    }
-//
-//    uint8_t status = TWSR & 0xF8;
-//    if ((status != 0x08) && (status != 0x10)) {
-//        return 0;
-//    }
-//
-//    TWDR = address_rw;
-//    TWCR = (1 << TWINT) | (1 << TWEN);
-//    while (!(TWCR & (1 << TWINT))) {
-//    }
-//
-//    status = TWSR & 0xF8;
-//    if ((status != 0x18) && (status != 0x40)) {
-//        return 0;
-//    }
-//
-//    return 1;
-//}
-//
-//void TWI_stop(void) {
-//    TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO);
-//    _delay_us(10);
-//}
-//
-//uint8_t TWI_write(uint8_t data) {
-//    TWDR = data;
-//    TWCR = (1 << TWINT) | (1 << TWEN);
-//    while (!(TWCR & (1 << TWINT))) {
-//    }
-//
-//    uint8_t status = TWSR & 0xF8;
-//    return (status == 0x28);
-//}
-//
-//uint8_t TWI_read_ack(void) {
-//    TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWEA);
-//    while (!(TWCR & (1 << TWINT))) {
-//    }
-//    return TWDR;
-//}
-//
-//uint8_t TWI_read_nack(void) {
-//    TWCR = (1 << TWINT) | (1 << TWEN);
-//    while (!(TWCR & (1 << TWINT))) {
-//    }
-//    return TWDR;
-//}
-//
-//uint8_t bcd_to_dec(uint8_t bcd) {
-//    return ((bcd >> 4) * 10) + (bcd & 0x0F);
-//}
-//
-//uint8_t dec_to_bcd(uint8_t dec) {
-//    return ((dec / 10) << 4) | (dec % 10);
-//}
-//
-//uint8_t DS1307_read_time(rtc_time_t *t) {
-//    if (!TWI_start((DS1307_ADDR << 1) | 0)) {
-//        return 0;
-//    }
-//
-//    if (!TWI_write(0x00)) {
-//        TWI_stop();
-//        return 0;
-//    }
-//
-//    if (!TWI_start((DS1307_ADDR << 1) | 1)) {
-//        TWI_stop();
-//        return 0;
-//    }
-//
-//    t->sec       = bcd_to_dec(TWI_read_ack() & 0x7F);
-//    t->min       = bcd_to_dec(TWI_read_ack());
-//    t->hour      = bcd_to_dec(TWI_read_ack() & 0x3F);
-//    t->dayOfWeek = bcd_to_dec(TWI_read_ack());
-//    t->day       = bcd_to_dec(TWI_read_ack());
-//    t->month     = bcd_to_dec(TWI_read_ack());
-//    t->year      = bcd_to_dec(TWI_read_nack());
-//
-//    TWI_stop();
-//    return 1;
-//}
-//
-//uint8_t DS1307_set_time(const rtc_time_t *t) {
-//    if (!TWI_start((DS1307_ADDR << 1) | 0)) {
-//        return 0;
-//    }
-//
-//    if (!TWI_write(0x00)) {
-//        TWI_stop();
-//        return 0;
-//    }
-//
-//    if (!TWI_write(dec_to_bcd(t->sec)))       { TWI_stop(); return 0; }
-//    if (!TWI_write(dec_to_bcd(t->min)))       { TWI_stop(); return 0; }
-//    if (!TWI_write(dec_to_bcd(t->hour)))      { TWI_stop(); return 0; }
-//    if (!TWI_write(dec_to_bcd(t->dayOfWeek))) { TWI_stop(); return 0; }
-//    if (!TWI_write(dec_to_bcd(t->day)))       { TWI_stop(); return 0; }
-//    if (!TWI_write(dec_to_bcd(t->month)))     { TWI_stop(); return 0; }
-//    if (!TWI_write(dec_to_bcd(t->year)))      { TWI_stop(); return 0; }
-//
-//    TWI_stop();
-//    return 1;
-//}
-//
-//uint32_t rtc_seconds_of_day(const rtc_time_t *t) {
-//    return ((uint32_t)t->hour * 3600UL) +
-//           ((uint32_t)t->min * 60UL) +
-//           (uint32_t)t->sec;
-//}
-
+//RTC Functions
 void TWI_init(void) {
     TWSR = 0x00;
     TWBR = 32;
@@ -519,17 +390,40 @@ uint8_t RTC_poll_and_cache(void) {
 }
 
 void UART_init(void) {
+    tx_head = 0;
+    tx_tail = 0;
+    
 	UBRR0H = (unsigned char)(UBRR_VALUE >> 8);
 	UBRR0L = (unsigned char)UBRR_VALUE;
 
-	UCSR0B = (1 << TXEN0);
+	UCSR0B = (1 << TXEN0) | (1 << RXEN0);
+    //Frame: 8 data bits, 2 stop bits
 	UCSR0C = (1 << USBS0) | (1 << UCSZ01) | (1 << UCSZ00);
 }
 
 void UART_transmit(char data) {
-	while (!(UCSR0A & (1 << UDRE0))) {
-	}
-	UDR0 = data;
+    uint8_t next_head = (tx_head + 1) % TX_BUFFER_SIZE;
+
+    //If buffer is full, we must wait
+    while (next_head == tx_tail); 
+
+    tx_buffer[tx_head] = data;
+    tx_head = next_head;
+
+    //Enable the interrupt
+    UCSR0B |= (1 << UDRIE0);
+}
+
+ISR(USART_UDRE_vect) {
+    if (tx_head != tx_tail) {
+        //Calculate next tail position
+        uint8_t next_tail = (tx_tail + 1) % TX_BUFFER_SIZE;
+        UDR0 = tx_buffer[tx_tail];
+        tx_tail = next_tail;
+    } else {
+        //Buffer empty, disable interrupt
+        UCSR0B &= ~(1 << UDRIE0);
+    }
 }
 
 void UART_print(const char *str) {
@@ -544,37 +438,38 @@ void UART_print_uint(uint16_t value) {
 	UART_print(buffer);
 }
 
-void UART_print_u32(uint32_t value) {
-    char buffer[16];
-    snprintf(buffer, sizeof(buffer), "%lu", (unsigned long)value);
-    UART_print(buffer);
-}
-
 void UART_print_float_2dp(float value) {
-    if (value < 0) {
-        UART_print("-");
-        value = -value;
-    }
+	if (value < 0) {
+		UART_print("-");
+		value = -value;
+	}
 
-    uint32_t scaled = (uint32_t)(value * 100.0f + 0.5f);
-    uint32_t whole = scaled / 100;
-    uint32_t frac  = scaled % 100;
+	uint16_t scaled = (uint16_t)(value * 100.0f + 0.5f);
+	uint16_t whole = scaled / 100;
+	uint16_t frac  = scaled % 100;
 
-    char buffer[24];
-    snprintf(buffer, sizeof(buffer), "%lu.%02lu",
-             (unsigned long)whole,
-             (unsigned long)frac);
-    UART_print(buffer);
+	char buffer[16];
+	snprintf(buffer, sizeof(buffer), "%u.%02u", whole, frac);
+	UART_print(buffer);
 }
 
 //OCR2A triggers approx every 30ms
 void setup_timer1_freerun(void) {
-    TCCR1A = 0;
+    //Normal mode
+    TCCR1A = 0; 
+    
+    //Prescaler /8
+    //At 8MHz, this means 1 tick = 1 microsecond.
+    //The timer wraps every 65,536 microseconds (~65.5ms)
+    //This is perfect for 50Hz (20ms) or 60Hz (16.6ms) signals.
     TCCR1B = (1 << CS11);
 }
 
 void setup_ADC(void) {
+	//Set voltage reference to AREF and use 10 bit results.
 	ADMUX = (0 << REFS1) | (0 << REFS0) | (0 << ADLAR);
+
+	//Enable interrupts. Set prescalar divisor to 64
 	ADCSRA = (1 << ADPS2) | (1 << ADPS1) | (1 << ADEN) | (1 << ADIE);
 }
 
@@ -582,34 +477,24 @@ void ADC_start_conversion(void) {
 	ADCSRA |= (1 << ADSC);
 }
 
+//Takes in a number from 0 to 4, corresponding to an ADC Channel
 void ADC_select_channel(uint8_t channel) {
-	channel &= 0x0F;
-	ADMUX &= ~((1 << MUX3) | (1 << MUX2) | (1 << MUX1) | (1 << MUX0));
+	channel &= 0x0F; //Look at lowest 4 bits
+	ADMUX &= ~((1 << MUX3) | (1 << MUX2) | (1 << MUX1) | (1 << MUX0)); //Clear channel
 	ADMUX |= channel;
+
 }
 
-ISR(ADC_vect) {
-
-    uint8_t channel = ADCSelectedChannel;
-    uint16_t reading = ADC;
-
-    if (discardNextSample) {
-        discardNextSample = 0;
-        ADC_start_conversion();
-        return;
-    }
-
-    ADCReading[channel] = reading;
-
-    uint16_t midPoint = 512;
+void handle_frequency_logic(uint16_t reading, uint8_t channel) {
+    uint16_t midPoint = 512; 
 
     if (channel == AC_VOLTAGE_CHANNEL) {
+        //Detect Positive-going Zero Crossing for Voltage
         if (lastACValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS)) {
-            uint16_t currentTime = TCNT1;
+            uint16_t currentTime = TCNT1; 
             uint16_t duration = currentTime - lastVTimestamp;
             lastVTimestamp = currentTime;
-
-            vCrossingTime = currentTime;
+            vCrossingTime = currentTime; 
 
             totalPeriodAccumulator += duration;
             cycleCounter++;
@@ -624,33 +509,49 @@ ISR(ADC_vect) {
     }
 
     if (channel == AC_CURRENT_HIGH_CHANNEL) {
+        // Detect Positive-going Zero Crossing for Current (for phase offset)
         if (lastACCurrentValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS)) {
             iCrossingTime = TCNT1;
         }
         lastACCurrentValue = reading;
     }
+}
 
-    if (channel == AC_VOLTAGE_CHANNEL && !acWindowReady) {
-        acVoltageSum += reading;
-        acVoltageSumSq += (uint32_t)reading * (uint32_t)reading;
+ISR(ADC_vect) {
+    uint8_t channel = ADCSelectedChannel;
+    uint16_t reading = ADC;
 
-        if (reading < acVoltageMin) acVoltageMin = reading;
-        if (reading > acVoltageMax) acVoltageMax = reading;
+    if (discardNextSample) {
+        discardNextSample = 0;
+        ADC_start_conversion();
+        return;
     }
 
-    if (channel == AC_CURRENT_HIGH_CHANNEL && !acWindowReady) {
-        acCurrentHighSum += reading;
-        acCurrentHighSumSq += (uint32_t)reading * (uint32_t)reading;
+    ADCReading[channel] = reading;
 
-        if (reading < acCurrentHighMin) acCurrentHighMin = reading;
-        if (reading > acCurrentHighMax) acCurrentHighMax = reading;
+    if (!acProcessingBusy) {
+        //Calculate frequency of voltage wave
+        handle_frequency_logic(reading, channel);
 
-        acSampleCount++;
-        if (acSampleCount >= NUM_SAMPLES) {
-            acWindowReady = 1;
+        //Accumulate RMS data
+        if (channel == AC_VOLTAGE_CHANNEL) {
+            acVoltageSum += reading;
+            acVoltageSumSq += (uint32_t)reading * (uint32_t)reading;
+        }
+
+        if (channel == AC_CURRENT_HIGH_CHANNEL) {
+            acCurrentHighSum += reading;
+            acCurrentHighSumSq += (uint32_t)reading * (uint32_t)reading;
+            
+            acSampleCount++;
+            if (acSampleCount >= NUM_SAMPLES) {
+                acDataReady = 1;
+                acProcessingBusy = 1; 
+            }
         }
     }
 
+    //Channel switching logic
     ADCSelectedChannel++;
     if (ADCSelectedChannel >= NO_CHANNELS){
         ADCSelectedChannel = 0;
@@ -662,27 +563,31 @@ ISR(ADC_vect) {
     ADC_start_conversion();
 }
 
+//Converts the ADC reading into DC voltage, then calculates input DC voltage
 float calculate_DC_voltage(uint16_t ADCreading) {
-
+	
 	float scalingRatio =  (4.724f / 10.0f);
 	float errorRatio = 1.681f;
     float errorSum = 0.080f;
-
+	
+	//Set convert ADC reading into voltage
 	float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
-
+	
 	float vin = (scaledVout / scalingRatio);
     float vinCorrected = vin * errorRatio + errorSum;
 	return vinCorrected;
 }
 
+//Converts the ADC reading into DC current, then calculates input DC current
 float calculate_DC_current(uint16_t ADCreading) {
-
+	
 	float scalingRatio = 1.0f;
 	float errorRatio = 1.954f;
     float errorSum = 0.023f;
-
+	
+	//Set convert ADC reading into voltage
 	float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
-
+	
 	float vin = (scaledVout / scalingRatio);
     float vinCorrected = vin * errorRatio + errorSum;
 
@@ -690,7 +595,7 @@ float calculate_DC_current(uint16_t ADCreading) {
 }
 
 float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count) {
-	if (count == 0) {
+	if (count == 0) { //Prevent 0 division
 		return 0.0f;
 	}
 
@@ -699,6 +604,7 @@ float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count) {
 
 	float variance = meanSq - (mean * mean);
 
+	//Prevent negative square roots due to rounding
 	if (variance < 0.0f) {
 		variance = 0.0f;
 	}
@@ -717,7 +623,7 @@ float calculate_AC_voltage_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
 
 	float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
 	float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
-
+    
     float vin = ADCRMSVoltage / scalingRatio;
     float vinCorrected = vin * errorRatio + errorSum;
 	return vinCorrected;
@@ -736,36 +642,32 @@ float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count
 	return currentRMSCorrected;
 }
 
-float calculate_AC_voltage_Vpp(uint16_t minCounts, uint16_t maxCounts) {
-    float adcVppCounts = (float)(maxCounts - minCounts);
-    float adcVppVolts = ADC_counts_to_volts(adcVppCounts);
-    float scalingRatio = (1.4f / 14.14f);
-    return adcVppVolts / scalingRatio;
-}
-
-float calculate_AC_current_high_Vpp(uint16_t minCounts, uint16_t maxCounts) {
-    float adcVppCounts = (float)(maxCounts - minCounts);
-    float adcVppVolts = ADC_counts_to_volts(adcVppCounts);
-    float scalingRatio = 1.0f;
-    float currentToVoltageRatio = 10.0f;
-    return (adcVppVolts / scalingRatio) * currentToVoltageRatio;
-}
-
 float calculate_frequency(uint32_t ticks) {
     if (ticks == 0) return 0.0f;
+    // (1,000,000 ticks/sec * 10 cycles) / total ticks for 10 cycles
     return (float)FREQ_CALC_CONSTANT / (float)ticks;
 }
 
 float calculate_phase_difference(uint16_t vTime, uint16_t iTime, uint32_t avgPeriodTicks) {
     if (avgPeriodTicks == 0) return 0.0f;
 
+    //Get the period of a single cycle from the averaged total
     float singleCycleTicks = (float)avgPeriodTicks / (float)FREQ_AVG_COUNT;
+    
+    //Calculate raw difference (time between V-crossing and I-crossing)
+    //Result is in microseconds (ticks)
     int16_t diff = (int16_t)(iTime - vTime);
 
+    //Convert time difference to degrees
     float phase = ((float)diff / singleCycleTicks) * 360.0f;
 
-    while (phase > 180.0f) phase -= 360.0f;
-    while (phase < -180.0f) phase += 360.0f;
+    //Normalize to -180 to 180 degrees
+    while (phase > 180.0f){
+        phase -= 360.0f;
+    }
+    while (phase < -180.0f){
+        phase += 360.0f;
+    }
 
     return phase;
 }
@@ -773,28 +675,23 @@ float calculate_phase_difference(uint16_t vTime, uint16_t iTime, uint32_t avgPer
 float calculate_power_factor(float phase){
     float phaseRadians = phase * M_PI / 180.0f;
     float powerFactor = cosf(phaseRadians);
-
+    
     return powerFactor;
 }
 
 void UART_print_measurements(float arr[NO_MEASUREMENTS]) {
-    UART_print("[");
+	UART_print("[");
 
-    for (uint8_t i = 0; i < NO_MEASUREMENTS; i++) {
-        if (i == MEAS_RTC_TIME) {
-            UART_print_u32((uint32_t)arr[i]);
-        } else {
-            UART_print_float_2dp(arr[i]);
-        }
+	for (uint8_t i = 0; i < NO_MEASUREMENTS; i++) {
+		UART_print_float_2dp(arr[i]);
 
-        if (i < NO_MEASUREMENTS - 1) {
-            UART_print(", ");
-        }
-    }
+		if (i < NO_MEASUREMENTS - 1) {
+			UART_print(", ");
+		}
+	}
 
-    UART_print("]\r\n");
+	UART_print("]\r\n");
 }
-
 // *****************************    LCD CODE    *********************************************
 
 uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr) {
@@ -802,9 +699,11 @@ uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr
 
 	switch(msg)
 	{
-		case U8X8_MSG_DELAY_NANO:
+		case U8X8_MSG_DELAY_NANO:// delay arg_int * 1 nano second
+            // At 20Mhz, each cycle is 50ns, the call itself is slower.
 			break;
-		case U8X8_MSG_DELAY_100NANO:
+		case U8X8_MSG_DELAY_100NANO:// delay arg_int * 100 nano seconds
+            // Approximate best case values...
 			#define CALL_CYCLES 26UL
 			#define CALC_CYCLES 4UL
 			#define RETURN_CYCLES 4UL
@@ -820,11 +719,11 @@ uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr
 			"brne 1b" : "=w" (cycles) : "0" (cycles)
 			);
 			break;
-		case U8X8_MSG_DELAY_10MICRO:
+		case U8X8_MSG_DELAY_10MICRO:        // delay arg_int * 10 micro seconds
 			for(int i=0 ; i < arg_int ; i++)
 				_delay_us(10);
 			break;
-		case U8X8_MSG_DELAY_MILLI:
+		case U8X8_MSG_DELAY_MILLI:          // delay arg_int * 1 milli second
 			for(int i=0 ; i < arg_int ; i++)
 				_delay_ms(1);
 			break;
@@ -835,95 +734,115 @@ uint8_t u8x8_avr_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr
 }
 
 uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void *arg_ptr) {
-
+    // Re-use library for delays
 	switch(msg)
 	{
-		case U8X8_MSG_GPIO_AND_DELAY_INIT:
+		case U8X8_MSG_GPIO_AND_DELAY_INIT:  // called once during init phase of u8g2/u8x8
 			DISPLAY_CLK_DIR |= 1<<DISPLAY_CLK_PIN;
 			DISPLAY_DATA_DIR |= 1<<DISPLAY_DATA_PIN;
 			DISPLAY_CS_DIR |= 1<<DISPLAY_CS_PIN;
 			DISPLAY_DC_DIR |= 1<<DISPLAY_DC_PIN;
 			DISPLAY_RESET_DIR |= 1<<DISPLAY_RESET_PIN;
-			break;
-		case U8X8_MSG_GPIO_SPI_CLOCK:
+			break;                          // can be used to setup pins
+		case U8X8_MSG_GPIO_SPI_CLOCK:       // Clock pin: Output level in arg_int
 			if(arg_int)
 				DISPLAY_CLK_PORT |= (1<<DISPLAY_CLK_PIN);
 			else
 				DISPLAY_CLK_PORT &= ~(1<<DISPLAY_CLK_PIN);
 			break;
-		case U8X8_MSG_GPIO_SPI_DATA:
+		case U8X8_MSG_GPIO_SPI_DATA:        // MOSI pin: Output level in arg_int
 			if(arg_int)
 				DISPLAY_DATA_PORT |= (1<<DISPLAY_DATA_PIN);
 			else
 				DISPLAY_DATA_PORT &= ~(1<<DISPLAY_DATA_PIN);
 			break;
-		case U8X8_MSG_GPIO_CS:
+		case U8X8_MSG_GPIO_CS:               // CS (chip select) pin: Output level in arg_int
 			if(arg_int)
 				DISPLAY_CS_PORT |= (1<<DISPLAY_CS_PIN);
 			else
 				DISPLAY_CS_PORT &= ~(1<<DISPLAY_CS_PIN);
-			break;
-		case U8X8_MSG_GPIO_DC:
+			break;  
+		case U8X8_MSG_GPIO_DC:              // DC (data/cmd, A0, register select) pin: Output level in arg_int
 			if(arg_int)
 				DISPLAY_DC_PORT |= (1<<DISPLAY_DC_PIN);
 			else
 				DISPLAY_DC_PORT &= ~(1<<DISPLAY_DC_PIN);
 			break;
 
-		case U8X8_MSG_GPIO_RESET:
+		case U8X8_MSG_GPIO_RESET:           // Reset pin: Output level in arg_int
 			if(arg_int)
 				DISPLAY_RESET_PORT |= (1<<DISPLAY_RESET_PIN);
 			else
 				DISPLAY_RESET_PORT &= ~(1<<DISPLAY_RESET_PIN);
 			break;
 		default:
-			if (u8x8_avr_delay(u8x8, U8X8_MSG_DELAY_NANO, arg_int, arg_ptr))
+			if (u8x8_avr_delay(u8x8, U8X8_MSG_DELAY_NANO, arg_int, arg_ptr))// check for any delay msgs
 				return 1;
-			u8x8_SetGPIOResult(u8x8, 1);
+			u8x8_SetGPIOResult(u8x8, 1);    // default return value
 			break;
 	}
 	return 1;
 }
 
 float eepromRead(unsigned int address) {
+    /* Wait for completion of previous write */
     while(EECR & (1<<EEPE)){
     }
+    /* Set up address register */
     EEAR = address;
+    /* Start eeprom read by writing EERE */
     EECR |= (1<<EERE);
+    /* Return data from Data Register */
     return EEDR;
 }
 
 void eepromUpdate(unsigned int address, float data) {
+    /* Wait for completion of previous write */
     while(EECR & (1<<EEPE)) {
     }
     if (data != eepromRead(address)) {
+        /* Set up address and Data Registers */
         EEAR = address;
         EEDR = data;
+        /* Write logical one to EEMPE */
         EECR |= (1<<EEMPE);
+        /* Start eeprom write by setting EEPE */
         EECR |= (1<<EEPE);
     }
 }
 
 void setup_timer2(void) {
+    // CTC Mode
     TCCR2A = (1 << WGM21);
-    OCR2A = 249;
+    
+    // Set for ~32ms interval at 8MHz
+    // 8,000,000 / 1024 (prescaler) / 250 (OCR2A) = 31.25 Hz
+    OCR2A = 39;
+     // /1024 prescaler
     TCCR2B = (1 << CS22) | (1 << CS21) | (1 << CS20);
+    
+    // Enable interrupt
     TIMSK2 |= (1 << OCIE2A);
 }
-
+// 2. Update the Timer2 ISR
 ISR(TIMER2_COMPA_vect) {
-    timer2Flag = 1;
-    timer2Overflows++;
-    LcdTick = 1;
-
-    uartSendTick++;
-    if (uartSendTick >= 32) {
-        uartSendTick = 0;
-        uartSendFlag = 1;
+    timer2Flag = 1;     // Used for your internal timing logic
+    timer2Overflows++;  // Used for your current timestamping
+    timer2LCDRefreshCounter++;
+    if (timer2LCDRefreshCounter == 200) {
+        LcdTick = 1;        // Now the LCD refreshes from here!
+        timer2LCDRefreshCounter = 0;
     }
 }
 
 void lcd_init(void){
+     /*
+		Select a setup procedure for your display from here: https://github.com/olikraus/u8g2/wiki/u8g2setupc
+		1. Arg: Address of an empty u8g2 structure
+		2. Arg: Usually U8G2_R0, others are listed here: https://github.com/olikraus/u8g2/wiki/u8g2reference#carduino-example
+		3. Arg: Protocol procedure (u8g2-byte), list is here: https://github.com/olikraus/u8g2/wiki/Porting-to-new-MCU-platform#communication-callback-eg-u8x8_byte_hw_i2c
+		4. Arg: Defined in this code itself (see above)
+	*/
 	u8g2_Setup_st7920_s_128x64_f(&u8g2, U8G2_R0, u8x8_byte_4wire_sw_spi, u8x8_avr_gpio_and_delay);
 
 	u8g2_InitDisplay(&u8g2);
@@ -935,39 +854,40 @@ void lcd_init(void){
 }
 
 void init(){
-    clock_prescale_set(clock_div_1);
+    clock_prescale_set(clock_div_1);    // set the clock prescaler to 1
+	
+    // Set input ports for buttons
+    DDRB &= ~((1<<1)|(1<<4)|(1<<6)|(1<<7));     // 1 and 4 are the Enter and Back buttons
+    DDRD &= ~((1<<4)|(1<<6)|(1<<7));            // 2 is for checking pc connection
 
-    DDRB &= ~((1<<1)|(1<<4)|(1<<6)|(1<<7));
-    DDRD &= ~((1<<2)|(1<<6)|(1<<7));
-
+    
+    // Set output port for LCD backlight
 	DDRD |= (1<<5);
 
-	TCCR0A |= (1 << WGM01) | (1 << WGM00) | (1 << COM0B1);
-	TCCR0B |= (1 << CS01);
+	TCCR0A |= (1 << WGM01) | (1 << WGM00) | (1 << COM0B1);  // set fast PWM Mode and non-inverting mode
+	TCCR0B |= (1 << CS01);                                  // set prescaler to 8
     setup_timer1_freerun();
 	setup_timer2();
 	setup_ADC();
+
     TWI_init();
 	lcd_init();
 
+    // Enable global interrupts 
     sei();
-
-	// To be removed after flashing the mcu
-	eepromUpdate(5, (float)turnsRatio);
-	MenuSettings[5] = turnsRatio;
 
     if (((int)eepromRead(MEASUREMENT_1_ADDRESS) >= 1) && ((int)eepromRead(MEASUREMENT_1_ADDRESS) <= 15)) {
 		for (int i = 0; i < 6; i++){
             if (i < 4) {
-                MenuSettings[i] = (eepromRead(MenuSettingsEEPROMAddresses[i]) - 1);
+                MenuSettings[i] = (eepromRead(MenuSettingsEEPROMAddresses[i]) - 1);// Read values from addresses if values are already stored there.
             } else {
-                MenuSettings[i] = eepromRead(MenuSettingsEEPROMAddresses[i]);
+                MenuSettings[i] = eepromRead(MenuSettingsEEPROMAddresses[i]);       // Read values from addresses if values are already stored there.
             }
 		}
     } else {
-        for (int i = 0; i < 6; i++){
+        for (int i = 0; i < 6; i++){// Write initial values to menu setting addresses
 			if (i == 4) {
-				eepromUpdate(i, (float)4);
+				eepromUpdate(i, (float)4);// Initial Backlight value. 4 is 100% Backlight.
 			} else if (i == 5) {
 				eepromUpdate(i, (float)turnsRatio);
 			} else {
@@ -975,23 +895,28 @@ void init(){
 			}
 		}
     }
-	turnsRatio = MenuSettings[5];
+    BacklightIndexCopy = MenuSettings[4];
+    OCR0B = Backlight[BacklightIndexCopy]; // Set Backlight
+    turnsRatio = MenuSettings[5];
+    TurnsRatioCopy = turnsRatio;
 }
 
 void DrawPCIcon() {
-    u8g2_SetDrawColor(&u8g2, 2);
 	u8g2_DrawFrame(&u8g2, 121, 59, 5, 3);
 	u8g2_DrawBox(&u8g2, 122, 62, 3, 1);
 }
 
 void DrawTime() {
-    u8g2_SetFont(&u8g2, u8g2_font_u8glib_4_hr);
-    u8g2_SetDrawColor(&u8g2, 2);
-    char Index[2];
-	sprintf(Index , "%d", (int)eepromRead(MEASUREMENT_3_ADDRESS));
-	u8g2_DrawStr(&u8g2, 55, 61, Index);
+    u8g2_SetFont(&u8g2, u8g2_font_u8glib_4_hr);// Change to smaller font
+    if (!Menu) {
+        u8g2_SetDrawColor(&u8g2, 2);
+    } else {
+		u8g2_SetDrawColor(&u8g2, 0);
+		u8g2_DrawBox(&u8g2, 0, 51, 128, 13);
+		u8g2_SetDrawColor(&u8g2, 1);
+	}
 
-    char TimeString[18];
+    char TimeString[20];
     if (rtcValid && rtcTimeSet) {
         sprintf(TimeString, "%02u/%02u/%02u %02u:%02u",
                 rtcCachedTime.day,
@@ -1011,7 +936,7 @@ void DrawTime() {
 
 void MainScreenDraw(float measurements[]) {
 	for (int i=0; i<5; i++) {
-        if (i == SelectPosition[0]) {
+        if (i == SelectPosition[0]) {   // Selection Box
             u8g2_SetDrawColor(&u8g2, 1);
             u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
             u8g2_SetDrawColor(&u8g2, 0);
@@ -1021,59 +946,73 @@ void MainScreenDraw(float measurements[]) {
             u8g2_SetDrawColor(&u8g2, 1);
         }
 		if (i<4) {
-			u8g2_DrawStr(&u8g2, 1, 10 + (i * 13), MeasurementName[(int)MenuSettings[i]]);
+			u8g2_DrawStr(&u8g2, 1, 10 + (i * 13), MeasurementName[(int)MenuSettings[i]]);   // MenuSettings stores the index for which measurement it is
             char measurementBuffer[10];
-			int measurementInt = measurements[(int)MenuSettings[i]];
-            sprintf(measurementBuffer , "%d.%d", (int)measurementInt, (int)round(((measurements[(int)MenuSettings[i]])-measurementInt)*100));
-            u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), measurementBuffer);
+            int measurementInt = measurements[(int)MenuSettings[i]];
+            int afterDecimal = ((measurements[(int)MenuSettings[i]])-measurementInt)*100;
+            if (afterDecimal < 10) {
+	            sprintf(measurementBuffer , "%d.0%d", (int)measurementInt, (int)round(afterDecimal));// Convert Measurement float value to string
+	        } else {
+	            sprintf(measurementBuffer , "%d.%d", (int)measurementInt, (int)round(afterDecimal));// Convert Measurement float value to string
+            }
+            u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), measurementBuffer); // Each row is 9 high with 2 space in between
 		} else {
 			u8g2_DrawStr(&u8g2, 1, 61, "Settings");
 		}
 	}
     u8g2_SetDrawColor(&u8g2, 2);
-    u8g2_DrawLine(&u8g2, 44, 1, 44, 48);
+    u8g2_DrawLine(&u8g2, 44, 1, 44, 48);    // Line separating measurement name from measurement value
+    DrawTime();
+    if (PIND & (1<<4)) {
+        DrawPCIcon();
+    }
 }
 
 void MainScreen(float measurements[]) {
-	MainScreenDraw(measurements);
-	if (ButtonTurn) {
-		if (ENTER || RIGHT) {
+	MainScreenDraw(measurements);   // Refreshes display constantly to display changing values.
+	if (ButtonTurn) {               // Attempts to prevent pressing of multiple buttons.
+		if (ENTER || RIGHT) {       // Enter and right
 			ButtonTurn = 0;
             u8g2_SetDrawColor(&u8g2, 0);
             u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
 			if (SelectPosition[0]<4) {
-				Menu = 1;
-				SelectPosition[1] = (int)MenuSettings[SelectPosition[0]];
-				u8g2_ClearBuffer(&u8g2);
+				Menu = 1;           // Measurement select menu
+				SelectPosition[1] = (int)MenuSettings[SelectPosition[0]];   // Set position at the index of the measurement for Measurement select screen.
+                u8g2_ClearBuffer(&u8g2);
                 MeasurementSelectDraw();
-				u8g2_SendBuffer(&u8g2);
+                u8g2_SendBuffer(&u8g2);
 			} else if (SelectPosition[0] == 4) {
-				Menu = 2;
+				Menu = 2;           // Settings menu
 				SelectPosition[1] = 0;
-				BacklightIndexCopy = (int)MenuSettings[4];
                 u8g2_ClearBuffer(&u8g2);
                 SettingsDraw();
                 u8g2_SendBuffer(&u8g2);
 			}
 			ButtonTurn = 1;
-		} else if (UP) {
+		} else if (UP) {            // Up
 			ButtonTurn = 0;
 			SelectPosition[0]--;
 			if (SelectPosition[0]<0) {
 				SelectPosition[0] = 4;
 			}
+            u8g2_ClearBuffer(&u8g2);
+            MainScreenDraw(measurements);
+            u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if (DOWN) {
+		} else if (DOWN) {          // Down
             if (OCR0B == 0) {
-                OCR0B = Backlight[(int)MenuSettings[4]];
+                OCR0B = Backlight[(int)MenuSettings[4]];    // Set Backlight
             } else {
-                OCR0B = 0;
+                OCR0B = 0;          // Set Backlight
             }
 			ButtonTurn = 0;
 			SelectPosition[0]++;
 			if (SelectPosition[0]>4) {
 				SelectPosition[0] = 0;
 			}
+            u8g2_ClearBuffer(&u8g2);
+            MainScreenDraw(measurements);
+            u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
 		}
 	}
@@ -1081,7 +1020,7 @@ void MainScreen(float measurements[]) {
 
 void MeasurementSelectDraw() {
 	for (int i=0; i<4; i++) {
-		if (i == SelectPosition[0]) {
+		if (i == SelectPosition[0]) {   // Selection Box
 			u8g2_SetDrawColor(&u8g2, 1);
 			u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
 			u8g2_SetDrawColor(&u8g2, 0);
@@ -1092,9 +1031,9 @@ void MeasurementSelectDraw() {
 			u8g2_SetDrawColor(&u8g2, 1);
 		}
         int idx;
-		if (i < SelectPosition[0]) {
+		if (i < SelectPosition[0]) {    // Shows measurements above select
             idx = SelectPosition[1] - (SelectPosition[0] - i);
-		} else {
+		} else {    // Shows measurements below select
             idx = SelectPosition[1] + (i - SelectPosition[0]);
 		}
         while (idx < 0) idx += MEASUREMENTS;
@@ -1104,767 +1043,420 @@ void MeasurementSelectDraw() {
     u8g2_SetDrawColor(&u8g2, 0);
     u8g2_DrawBox(&u8g2, 0, (4 * 13) - 1, 128, 13);
 	u8g2_SetDrawColor(&u8g2, 2);
-	u8g2_DrawLine(&u8g2, 44, 1, 44, 48);
+	u8g2_DrawLine(&u8g2, 44, 1, 44, 48);    // Line separating measurement name from measurement value
+    DrawTime();
+    if (PIND & (1<<2)) {
+        DrawPCIcon();
+    }
 }
 
 //u8g2_ClearBuffer(&u8g2);
 //u8g2_SendBuffer(&u8g2);
 
-void MeasurementSelect(){
-	if (ButtonTurn){
-		if (ENTER || LEFT) {
+void MeasurementSelect(float* measurements){
+    MeasurementSelectDraw();
+	if (ButtonTurn) {
+		if (ENTER || LEFT) {    // Enter and left
 			ButtonTurn = 0;
-			MenuSettings[SelectPosition[0]] = SelectPosition[1];
-			eepromUpdate(MenuSettingsEEPROMAddresses[SelectPosition[0]], SelectPosition[1] + 1);
+			MenuSettings[SelectPosition[0]] = SelectPosition[1];    // Confirm measurement selection
+			eepromUpdate(MenuSettingsEEPROMAddresses[SelectPosition[0]], SelectPosition[1] + 1);    // Update in EEPROM
 			Menu = 0;
+            u8g2_ClearBuffer(&u8g2);
+            MainScreenDraw(measurements);
+            u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if (BACK) {
+		} else if (BACK) {  // Back
 			ButtonTurn = 0;
 			Menu = 0;
+            u8g2_ClearBuffer(&u8g2);
+            MainScreenDraw(measurements);
+            u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if (UP) {
+		} else if (UP) {    // Up
 			ButtonTurn = 0;
 			SelectPosition[1]--;
 			if (SelectPosition[1] < 0) {
 				SelectPosition[1] = MEASUREMENTS - 1;
 			}
-			u8g2_ClearBuffer(&u8g2);
-			MeasurementSelectDraw();
-			u8g2_SendBuffer(&u8g2);
+            u8g2_ClearBuffer(&u8g2);
+            MeasurementSelectDraw();
+            u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if (DOWN) {
+		} else if (DOWN) {  // Down
 			ButtonTurn = 0;
 			SelectPosition[1]++;
 			if (SelectPosition[1] > (MEASUREMENTS - 1)) {
 				SelectPosition[1] = 0;
 			}
-			u8g2_ClearBuffer(&u8g2);
-			MeasurementSelectDraw();
-			u8g2_SendBuffer(&u8g2);
+            u8g2_ClearBuffer(&u8g2);
+            MeasurementSelectDraw();
+            u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
 		}
 	}
 }
 
 void SettingsDraw() {
-	//u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr); // Reset font after returning from TurnsRatioMenuDraw
+	u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr); // Reset font after returning from TurnsRatioMenuDraw
 	for (int i=0; i<2; i++) {
-		if (i == SelectPosition[0]) {
-			u8g2_SetDrawColor(&u8g2, 1);
-			u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
-			u8g2_SetDrawColor(&u8g2, 0);
-		} else {
-			u8g2_SetDrawColor(&u8g2, 0);
-			u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
-			u8g2_SetDrawColor(&u8g2, 1);
-		}
+        if (i == SelectPosition[1]) {
+            u8g2_SetDrawColor(&u8g2, 1);
+            u8g2_DrawBox(&u8g2, 0, i * 14, 128, 14);
+            u8g2_SetDrawColor(&u8g2, 0);
+        } else {
+            u8g2_SetDrawColor(&u8g2, 0);
+            u8g2_DrawBox(&u8g2, 0, i * 14, 128, 14);
+            u8g2_SetDrawColor(&u8g2, 1);
+        }
 		if (i == 0) {
 			u8g2_DrawStr(&u8g2, 1, 10, "Backlight:");
-			u8g2_DrawTriangle(&u8g2, 60, 1, 53, 5, 60, 9);
+			u8g2_DrawTriangle(&u8g2, 60, 1, 53, 5, 60, 9);  // Arrows
 			u8g2_DrawTriangle(&u8g2, 70, 1, 77, 5, 70, 9);
 			char Index[2];
-			sprintf(Index , "%d", BacklightIndexCopy);
+			sprintf(Index , "%d", BacklightIndexCopy);      // Convert int BacklightIndexCopy to string
 			u8g2_DrawStr(&u8g2, 63, 10, Index);
 		} else {
-			u8g2_DrawStr(&u8g2, 1, 24, "Turns Ratio:");
+			u8g2_DrawStr(&u8g2, 1, 25, "Turns Ratio:");
+			
 			char turnsRatioBuffer[10];
-			int turnsRatioInt = turnsRatio;
-			sprintf(turnsRatioBuffer , "%d.%d", turnsRatioInt, (int)round((turnsRatio-turnsRatioInt)*100));
-			u8g2_DrawStr(&u8g2, 70, 24, turnsRatioBuffer);
+			int turnsRatioInt = TurnsRatioCopy;
+			int afterDecimal = (TurnsRatioCopy-turnsRatioInt)*1000;
+			if (afterDecimal < 10) {
+				sprintf(turnsRatioBuffer , "%d.0%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+				} else {
+				sprintf(turnsRatioBuffer , "%d.%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+			}
+			
+			u8g2_DrawStr(&u8g2, 62, 25, turnsRatioBuffer);
 		}
 	}
+    DrawTime();
+    if (PIND & (1<<2)) {
+        DrawPCIcon();
+    }
 }
 
-void Settings() {
+void Settings(float measurements[]) {
     SettingsDraw();
 	if (ButtonTurn){
-		if (PINB & (1<<1)) {
+		if (PINB & (1<<1)) {    // Enter
 			u8g2_SetDrawColor(&u8g2, 0);
 			u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
-			if (SelectPosition[1] == 1) {
+			if (SelectPosition[1] == 1) {   // Into transformer turns ratio edit screen
 				ButtonTurn = 0;
 				Menu = 3;
-				TurnsRatioCopy = MenuSettings[5];
 				SelectPosition[1] = 0;
-				ButtonTurn = 1;
-				u8g2_ClearBuffer(&u8g2);
+                u8g2_ClearBuffer(&u8g2);
                 TurnsRatioMenuDraw();
-				u8g2_SendBuffer(&u8g2);
-			} else {
+                u8g2_SendBuffer(&u8g2);
+				ButtonTurn = 1;
+			} else {    // Confirm Backlight setting
 				ButtonTurn = 0;
 				Menu = 0;
 				MenuSettings[4] = BacklightIndexCopy;
 				OCR0B = Backlight[(int)MenuSettings[4]];
+				eepromUpdate(BACKLIGHT_ADDRESS, BacklightIndexCopy);
+                u8g2_ClearBuffer(&u8g2);
+                MainScreenDraw(measurements);
+                u8g2_SendBuffer(&u8g2);
 				ButtonTurn = 1;
 			}
-		} else if ((PINB & (1<<4))) {
+		} else if ((PINB & (1<<4))) {   // Back. Exit settings without saving backlight setting changes
 			u8g2_SetDrawColor(&u8g2, 0);
 			u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
 			ButtonTurn = 0;
 			Menu = 0;
-			BacklightIndexCopy = (int)MenuSettings[4];
-			OCR0B = Backlight[(int)MenuSettings[4]];
+			BacklightIndexCopy = (int)MenuSettings[4];  // Return without saving Backlight changes
+			OCR0B = Backlight[BacklightIndexCopy];
+            u8g2_ClearBuffer(&u8g2);
+            MainScreenDraw(measurements);
+            u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if ((PINB & (1<<6))) {
+		} else if ((PINB & (1<<6))) {   // Up
 			ButtonTurn = 0;
 			SelectPosition[1]--;
 			if (SelectPosition[1] < 0) {
 				SelectPosition[1] = 1;
 			}
-			u8g2_ClearBuffer(&u8g2);
-			SettingsDraw();
-			u8g2_SendBuffer(&u8g2);
+            u8g2_ClearBuffer(&u8g2);
+            SettingsDraw();
+            u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if ((PINB & (1<<7))) {
+		} else if ((PINB & (1<<7))) { // Down
 			ButtonTurn = 0;
 			SelectPosition[1]++;
 			if (SelectPosition[1] > 1) {
 				SelectPosition[1] = 0;
 			}
-			u8g2_ClearBuffer(&u8g2);
-			SettingsDraw();
-			u8g2_SendBuffer(&u8g2);
+            u8g2_ClearBuffer(&u8g2);
+            SettingsDraw();
+            u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if ((PIND & (1<<6)) && (SelectPosition[1] == 0)) {
+		} else if ((PIND & (1<<6)) && (SelectPosition[1] == 0)) {   // Right. Increase backlight setting
 			ButtonTurn = 0;
 			BacklightIndexCopy++;
 			if (BacklightIndexCopy > 4) {
 				BacklightIndexCopy = 0;
 			}
+            u8g2_ClearBuffer(&u8g2);
+            SettingsDraw();
+            u8g2_SendBuffer(&u8g2);
 			OCR0B = Backlight[BacklightIndexCopy];
-			u8g2_ClearBuffer(&u8g2);
-			SettingsDraw();
-			u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if ((PIND & (1<<7)) && (SelectPosition[1] == 0)) {
+		} else if ((PIND & (1<<7)) && (SelectPosition[1] == 0)) {   // Left. Decrease backlight setting
 			ButtonTurn = 0;
 			BacklightIndexCopy--;
 			if (BacklightIndexCopy < 0) {
 				BacklightIndexCopy = 4;
 			}
+            u8g2_ClearBuffer(&u8g2);
+            SettingsDraw();
+            u8g2_SendBuffer(&u8g2);
 			OCR0B = Backlight[BacklightIndexCopy];
-			u8g2_ClearBuffer(&u8g2);
-			SettingsDraw();
-			u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
 		}
 	}
 }
 
 void TurnsRatioMenuDraw() {
-	int DecimalOffset = 0;
-
-	SettingsDraw();
-
-	char TurnsRatio[7];
-	sprintf(TurnsRatio , "%.3f", TurnsRatioCopy);
-	u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
-
-	//u8g2_SetFont(&u8g2, u8g2_font_VCR_OSD_mn); // Change to larger font
-	for (int i=0; i<5; i++) { // Exact values yet to be confirmed
-		if (i == 2) { // Account for decimal
-			DecimalOffset = 3;
-		}
-		u8g2_DrawTriangle(&u8g2, (i * 5) - 2 + DecimalOffset, 27, (i * 5) + DecimalOffset, 22, (i * 5) + 2 + DecimalOffset, 27);
-		u8g2_DrawTriangle(&u8g2, (i * 5) - 2 + DecimalOffset, 46, (i * 5) + DecimalOffset, 51, (i * 5) + 2 + DecimalOffset, 46);
-		if (i == SelectPosition[0]) {
-			u8g2_SetDrawColor(&u8g2, 1);
-			u8g2_DrawBox(&u8g2, (i * 5) + DecimalOffset, 60, 5, 11);
-			u8g2_SetDrawColor(&u8g2, 2);
-		}
+    u8g2_SetDrawColor(&u8g2, 1);
+    u8g2_DrawBox(&u8g2, 0, 0, 128, 12);
+    
+    u8g2_SetDrawColor(&u8g2, 0);
+    u8g2_DrawStr(&u8g2, 1, 10, "Turns Ratio:");
+    char turnsRatioBuffer[20];
+    int turnsRatioInt = MenuSettings[5];
+    int afterDecimal = (MenuSettings[5]-turnsRatioInt)*1000;
+    if (afterDecimal < 10) {
+        sprintf(turnsRatioBuffer , "%d.00%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+    } else if ((afterDecimal < 100) && (afterDecimal >= 10)) {
+        sprintf(turnsRatioBuffer , "%d.0%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+    } else {
+		sprintf(turnsRatioBuffer , "%d.%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
 	}
+    u8g2_DrawStr(&u8g2, 62, 10, turnsRatioBuffer);
+    
+    int DecimalOffset = 0;  // Used to offset the x position due to the decimal
+    int digitSpace = 16;
+	for (int i=0; i<5; i++) {
+        u8g2_SetDrawColor(&u8g2, 1);
+		if (i == 2) { // Account for decimal
+			DecimalOffset = 16;
+		}
+        int Offset = 21 + DecimalOffset;
+		u8g2_DrawTriangle(&u8g2, (i * digitSpace) + Offset, 21, (i * digitSpace) + 3 + Offset, 15, (i * digitSpace) + 7 + Offset, 21);    // Arrows
+		u8g2_DrawTriangle(&u8g2, (i * digitSpace) + Offset, 46, (i * digitSpace) + 3 + Offset, 51, (i * digitSpace) + 7 + Offset, 46);
+		if (i != SelectPosition[1]) {
+			u8g2_SetDrawColor(&u8g2, 0);
+            u8g2_DrawBox(&u8g2, (2 * digitSpace) + 17, 23, 16, 21);
+		}
+        u8g2_DrawBox(&u8g2, (i * digitSpace) + Offset - 4, 23, 16, 21);
+	}
+    
+    u8g2_SetDrawColor(&u8g2, 2);
+    u8g2_SetFont(&u8g2, u8g2_font_profont29_mf   ); // Change to larger font
+    
+	char turnsRatioBuffer2[20];
+	turnsRatioInt = TurnsRatioCopy;
+	afterDecimal = (TurnsRatioCopy-turnsRatioInt)*1000;
+	if (afterDecimal < 10) {
+		sprintf(turnsRatioBuffer2, "%d.00%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+	} else if ((afterDecimal < 100) && (afterDecimal >= 10)) {
+		sprintf(turnsRatioBuffer2, "%d.0%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+	} else {
+		sprintf(turnsRatioBuffer2, "%d.%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+	}
+	u8g2_DrawStr(&u8g2, 18, 43, turnsRatioBuffer2);
+    
+    DrawTime();
+    if (PIND & (1<<2)) {
+        DrawPCIcon();
+    }
 }
 
 void TurnsRatioMenu(){
     TurnsRatioMenuDraw();
 	if (ButtonTurn){
-		if ((PINB & (1<<1))) {
+		if ((PINB & (1<<1))) {  // Enter. Confirm New Turn Ratio
 			u8g2_SetDrawColor(&u8g2, 0);
 			u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
 			ButtonTurn = 0;
 			MenuSettings[5] = TurnsRatioCopy;
-			//eeprom_update_float((float*)MenuSettingsEEPROMAddresses[5], TurnsRatioCopy);
             turnsRatio = MenuSettings[5];
+			eepromUpdate(TURNS_RATIO_ADDRESS, (float)turnsRatio);
 			Menu = 2;
-			ButtonTurn = 1;
-			u8g2_ClearBuffer(&u8g2);
+            u8g2_ClearBuffer(&u8g2);
             SettingsDraw();
-			u8g2_SendBuffer(&u8g2);
-		} else if ((PINB & (1<<4))) {
+            u8g2_SendBuffer(&u8g2);
+			ButtonTurn = 1;
+		} else if ((PINB & (1<<4))) {   // Back. Return without saving Turns Ratio changes
 			u8g2_SetDrawColor(&u8g2, 0);
 			u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
 			ButtonTurn = 0;
 			Menu = 2;
+            u8g2_ClearBuffer(&u8g2);
+            SettingsDraw();
+            u8g2_SendBuffer(&u8g2);
 			SelectPosition[1] = 1;
 			ButtonTurn = 1;
-			u8g2_ClearBuffer(&u8g2);
-            SettingsDraw();
-			u8g2_SendBuffer(&u8g2);
 		} else if ((PINB & (1<<6))) {
 			ButtonTurn = 0;
-
-			char TurnsRatio[7];
-			sprintf(TurnsRatio , "%.3f", TurnsRatioCopy);
-			u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
-
-			if ((TurnsRatio[SelectPosition[1]] - '0') == 9) {
-				TurnsRatioCopy -= (90 / pow(10, SelectPosition[1]));
+			int digit = (TurnsRatioCopy / pow(10, 1-(SelectPosition[1])) );
+			digit = digit % 10;
+			if (digit == 9) {   // Check specific digit
+				TurnsRatioCopy -= (90 / pow(10, SelectPosition[1]));    // Up from 9, cycle to 0
 			} else {
-				TurnsRatioCopy += (10 / pow(10, SelectPosition[1]));
+				TurnsRatioCopy += (10 / pow(10, SelectPosition[1]));    // plus 10 / (10 ^ digit place). e.g. if 1st digit: 10 / 10 ^ 0 = 10 / 1 = 10
 			}
-			u8g2_ClearBuffer(&u8g2);
-			TurnsRatioMenuDraw();
-			u8g2_SendBuffer(&u8g2);
+            u8g2_ClearBuffer(&u8g2);
+            TurnsRatioMenuDraw();
+            u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if ((PINB & (1<<7))) {
+		} else if ((PINB & (1<<7))) {   // Down
 			ButtonTurn = 0;
-
-			char TurnsRatio[7];
-			sprintf(TurnsRatio , "%.3f", TurnsRatioCopy);
-			u8g2_DrawStr(&u8g2, 2, 51, TurnsRatio);
-
-			if ((TurnsRatio[SelectPosition[1]] - '0') == 0) {
-				TurnsRatioCopy += (90 / pow(10, SelectPosition[1]));
+			int digit = (TurnsRatioCopy / pow(10, 1-(SelectPosition[1])) );
+			digit = digit % 10;
+			if (digit == 9) {   // Check specific digit
+				TurnsRatioCopy += (90 / pow(10, SelectPosition[1]));    // Down from 0, cycle to 9
 			} else {
-				TurnsRatioCopy -= (10 / pow(10, SelectPosition[1]));
+				TurnsRatioCopy -= (10 / pow(10, SelectPosition[1]));    // subtract 10 / (10 ^ digit place). e.g. if 1st digit: 10 / 10 ^ 0 = 10 / 1 = 10
 			}
-			u8g2_ClearBuffer(&u8g2);
-			TurnsRatioMenuDraw();
-			u8g2_SendBuffer(&u8g2);
+            u8g2_ClearBuffer(&u8g2);
+            TurnsRatioMenuDraw();
+            u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if ((PIND & (1<<6))) {
+		} else if ((PIND & (1<<6))) {   // Right
 			ButtonTurn = 0;
 			SelectPosition[1]++;
 			if (SelectPosition[1] > 4) {
 				SelectPosition[1] = 0;
 			}
-			u8g2_ClearBuffer(&u8g2);
-			TurnsRatioMenuDraw();
-			u8g2_SendBuffer(&u8g2);
+            u8g2_ClearBuffer(&u8g2);
+            TurnsRatioMenuDraw();
+            u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
-		} else if ((PIND & (1<<7))) {
+		} else if ((PIND & (1<<7))) {   // Left
 			ButtonTurn = 0;
 			SelectPosition[1]--;
 			if (SelectPosition[1] < 0) {
 				SelectPosition[1] = 4;
 			}
-			u8g2_ClearBuffer(&u8g2);
-			TurnsRatioMenuDraw();
-			u8g2_SendBuffer(&u8g2);
+            u8g2_ClearBuffer(&u8g2);
+            TurnsRatioMenuDraw();
+            u8g2_SendBuffer(&u8g2);
 			ButtonTurn = 1;
 		}
 	}
 }
 
-// ***************    MAIN    *************************
+void process_measurements(float* measurements) {
+    if (acDataReady) {
+        //Calculate RMS
+        measurements[MEAS_AC_VOLTAGE] = calculate_AC_voltage_RMS(acVoltageSum, acVoltageSumSq, acSampleCount);
+        measurements[MEAS_AC_CURRENT_HIGH] = calculate_AC_current_high_RMS(acCurrentHighSum, acCurrentHighSumSq, acSampleCount);
+        
+        //Calculate Power Factor and Frequency
+        float freq = calculate_frequency(periodTicks);
+        float phase = calculate_phase_difference(vCrossingTime, iCrossingTime, periodTicks);
+        measurements[MEAS_FREQUENCY] = freq;
+        measurements[MEAS_PHASE_DIFFERENCE] = phase;
+        measurements[MEAS_POWER_FACTOR] = calculate_power_factor(phase);
 
-int main(void) {
-    init();
-
-	UART_init();
-
-	ADC_select_channel(DC_VOLTAGE_CHANNEL);
-
-	sei();
-	ADC_start_conversion();
-
-#if RTC_SET_ON_BOOT
-    {
-        rtc_time_t setTime;
-        setTime.sec = 0;
-        setTime.min = 30;
-        setTime.hour = 14;
-        setTime.dayOfWeek = 2;
-        setTime.day = 6;
-        setTime.month = 5;
-        setTime.year = 26;
-        setTime.clockHalted = 0;
-        DS1307_set_time(&setTime);
+        //Reset buffers
+        cli();
+        acVoltageSum = 0;
+        acVoltageSumSq = 0;
+        acCurrentHighSum = 0;
+        acCurrentHighSumSq = 0;
+        acSampleCount = 0;
+        acDataReady = 0;
+        acProcessingBusy = 0; //Indicate we're ready
+        sei();
     }
-#endif
+    
+    uint32_t ticks;
 
+    cli();
+    ticks = timer2Overflows;
+    sei();
+
+    if ((ticks - lastRTCPoll) >= 31)
+    {
+        lastRTCPoll = ticks;
+
+        RTC_poll_and_cache();
+
+        if (rtcValid && rtcTimeSet)
+        {
+            measurements[MEAS_RTC_TIME] =
+                (float)rtcCachedSeconds;
+        }
+        else
+        {
+            measurements[MEAS_RTC_TIME] = 0.0f;
+        }
+    }
+}
+
+// ***************    MAIN    *************************
+int main(void) {
+    //Initialisations
+    lcd_init();
+    init();
+    UART_init();
+    
+    //This buffer will be sent via serial
+    float measurements[NO_MEASUREMENTS] = {0};
+    
+    //Fill all measurements with placeholders
+    for (uint8_t i = 0; i < NO_MEASUREMENTS; i++) {
+        measurements[i] = 4.2f;
+    }
+  
+    ADC_start_conversion();
+    ADC_select_channel(DC_VOLTAGE_CHANNEL);
+    sei();
+    
+    #if RTC_SET_ON_BOOT
+        {
+            rtc_time_t setTime;
+            setTime.sec = 0;
+            setTime.min = 30;
+            setTime.hour = 14;
+            setTime.dayOfWeek = 2;
+            setTime.day = 6;
+            setTime.month = 5;
+            setTime.year = 26;
+            setTime.clockHalted = 0;
+            DS1307_set_time(&setTime);
+        }
+    #endif
     RTC_poll_and_cache();
+    
+    
 
-	float measurements[NO_MEASUREMENTS];
-	uint16_t localDCVoltageADC;
-	uint16_t localDCCurrentADC;
-
-	for (uint8_t i = 0; i < NO_MEASUREMENTS; i++) {
-		measurements[i] = 4.2f;
-	}
-
-    uint32_t localPeriodTicks = 0;
-
-	while(1){
-		if (acWindowReady){
-            uint32_t localACVoltageSum;
-            uint32_t localACVoltageSumSq;
-
-            uint32_t localACCurrentHighSum;
-            uint32_t localACCurrentHighSumSq;
-
-            uint16_t localACSampleCount;
-			uint16_t localVTime;
-			uint16_t localITime;
-            uint16_t localACVoltageMin;
-            uint16_t localACVoltageMax;
-            uint16_t localACCurrentHighMin;
-            uint16_t localACCurrentHighMax;
-
-            cli();
-
-            localACVoltageSum = acVoltageSum;
-            localACVoltageSumSq = acVoltageSumSq;
-
-            localACCurrentHighSum = acCurrentHighSum;
-            localACCurrentHighSumSq = acCurrentHighSumSq;
-
-            localACSampleCount = acSampleCount;
-            localACVoltageMin = acVoltageMin;
-            localACVoltageMax = acVoltageMax;
-            localACCurrentHighMin = acCurrentHighMin;
-            localACCurrentHighMax = acCurrentHighMax;
-
-            acVoltageSum = 0;
-            acVoltageSumSq = 0;
-            acVoltageMin = 1023;
-            acVoltageMax = 0;
-
-            acCurrentHighSum = 0;
-            acCurrentHighSumSq = 0;
-            acCurrentHighMin = 1023;
-            acCurrentHighMax = 0;
-
-            acSampleCount = 0;
-            acWindowReady = 0;
-
-            localPeriodTicks = periodTicks;
-
-			localVTime = vCrossingTime;
-    		localITime = iCrossingTime;
-            sei();
-
-            measurements[MEAS_AC_VOLTAGE] =
-                calculate_AC_voltage_RMS(localACVoltageSum,
-                                         localACVoltageSumSq,
-                                         localACSampleCount);
-
-            measurements[MEAS_AC_CURRENT_HIGH] =
-                calculate_AC_current_high_RMS(localACCurrentHighSum,
-                                              localACCurrentHighSumSq,
-                                              localACSampleCount);
-
-            measurements[MEAS_AC_VOLTAGE_VPP] =
-                calculate_AC_voltage_Vpp(localACVoltageMin, localACVoltageMax);
-
-            measurements[MEAS_AC_CURRENT_HIGH_VPP] =
-                calculate_AC_current_high_Vpp(localACCurrentHighMin, localACCurrentHighMax);
-
-			measurements[MEAS_FREQUENCY] = calculate_frequency(localPeriodTicks);
-    		measurements[MEAS_PHASE_DIFFERENCE] = calculate_phase_difference(localVTime, localITime, localPeriodTicks);
-    		measurements[MEAS_POWER_FACTOR] = calculate_power_factor(measurements[MEAS_PHASE_DIFFERENCE]);
-            measurements[MEAS_AC_APPARANT_POWER] = measurements[MEAS_AC_VOLTAGE] * measurements[MEAS_AC_CURRENT_HIGH];
-            measurements[MEAS_AC_REAL_POWER] = measurements[MEAS_AC_APPARANT_POWER] * measurements[MEAS_POWER_FACTOR];
-
-            {
-                float apparentSq = measurements[MEAS_AC_APPARANT_POWER] * measurements[MEAS_AC_APPARANT_POWER];
-                float realSq = measurements[MEAS_AC_REAL_POWER] * measurements[MEAS_AC_REAL_POWER];
-                float reactiveSq = apparentSq - realSq;
-                if (reactiveSq < 0.0f) reactiveSq = 0.0f;
-                measurements[MEAS_AC_REACTIVE_POWER] = sqrtf(reactiveSq);
-            }
-        }
-
-        if (areReadingsReady) {
-            cli();
-
-            localDCVoltageADC = ADCReading[DC_VOLTAGE_CHANNEL];
-            localDCCurrentADC = ADCReading[DC_CURRENT_CHANNEL];
-
-            areReadingsReady = 0;
-            sei();
-
-            measurements[MEAS_DC_VOLTAGE] = calculate_DC_voltage(localDCVoltageADC);
-            measurements[MEAS_DC_CURRENT] = calculate_DC_current(localDCCurrentADC);
-            measurements[MEAS_DC_POWER] = measurements[MEAS_DC_VOLTAGE] * measurements[MEAS_DC_CURRENT];
-        }
-
-        if (uartSendFlag) {
-            uartSendFlag = 0;
-
-            RTC_poll_and_cache();
-            if (rtcValid && rtcTimeSet) {
-                measurements[MEAS_RTC_TIME] = (float)rtcCachedSeconds;
-            } else {
-                measurements[MEAS_RTC_TIME] = 0.0f;
-            }
-
-            UART_print_measurements(measurements);
-        }
-
-        if (LcdTick && !Menu) {
+    while(1){
+        // Process new measurement data if the window is ready
+        process_measurements(measurements);
+        UART_print_measurements(measurements);
+        
+        // *************************      LCD CODE      ******************************
+        
+        if (LcdTick) {
             u8g2_ClearBuffer(&u8g2);
         }
-		if (!Menu) {
-			MainScreen(measurements);
-		} else if (Menu == 1) {
-			MeasurementSelect();
-		} else if (Menu == 2) {
-			Settings();
-		} else if (Menu == 3) {
-			TurnsRatioMenu();
-		}
-		if (PIND & (1<<2)) {
-			DrawPCIcon();
-		}
-		DrawTime();
-        if (LcdTick && !Menu) {
+        if (!Menu) { // The different menu screens.
+            MainScreen(measurements);
+        } else if (Menu == 1) {
+            MeasurementSelect(measurements);
+        } else if (Menu == 2) {
+            Settings(measurements);
+        } else if (Menu == 3) {
+            TurnsRatioMenu();
+        }
+        if (LcdTick) {
             u8g2_SendBuffer(&u8g2);
             LcdTick = 0;
         }
-	}
+    }
 }
-//------------------------------------------------------------------------------
-//JOE'S OLD MEASUREMENT ONLY CODE (for testing without lcd)
-//#include <stdio.h>
-//#include <stdlib.h>
-//#include <stdint.h>
-//#include <avr/io.h>
-//#include <math.h> //ASK!!!!!!
-//#include <avr/interrupt.h> //Ask!
-//#include <util/delay.h>
-//
-////UART COMMUNICATION
-//#define F_CPU 8000000UL
-//#define BAUD 9600
-//#define UBRR_VALUE ((F_CPU / (16UL * BAUD)) - 1)
-//
-////MEASUREMENTS: for measurements read from the channels, and measurements calculated from those
-//#define VREF 5.0f
-//#define NUM_SAMPLES 100
-//#define NO_MEASUREMENTS 16 //See comment at the end of main for the format
-//#define MEAS_DC_VOLTAGE              0
-//#define MEAS_DC_CURRENT              1
-//#define MEAS_AC_VOLTAGE              2
-//#define MEAS_AC_CURRENT_HIGH         3
-//#define MEAS_AC_CURRENT_LOW          4
-//#define MEAS_PHASE                   5
-//#define MEAS_POWER_FACTOR            6
-//#define MEAS_FREQUENCY               7
-//#define MEAS_REAL_POWER              8
-//#define MEAS_REACTIVE_POWER          9
-//#define MEAS_APPARENT_POWER          10
-//#define MEAS_TIME                    11
-//
-////CHANNELS: the actual readings from the circuit
-//#define NO_CHANNELS 4
-//#define DC_VOLTAGE_CHANNEL 0
-//#define DC_CURRENT_CHANNEL 1
-//#define AC_VOLTAGE_CHANNEL 2
-//#define AC_CURRENT_HIGH_CHANNEL 3
-//#define AC_CURRENT_LOW_CHANNEL 4
-//
-////GLOBAL VARIABLES
-//volatile uint32_t acVoltageSum = 0;
-//volatile uint32_t acVoltageSumSq = 0;
-//volatile uint16_t acVoltageMin = 1023;
-//volatile uint16_t acVoltageMax = 0;
-//
-//volatile uint32_t acCurrentHighSum = 0;
-//volatile uint32_t acCurrentHighSumSq = 0;
-//volatile uint16_t acCurrentHighMin = 1023;
-//volatile uint16_t acCurrentHighMax = 0;
-//
-//volatile uint32_t acCurrentLowSum = 0;
-//volatile uint32_t acCurrentLowSumSq = 0;
-//volatile uint16_t acCurrentLowMin = 1023;
-//volatile uint16_t acCurrentLowMax = 0;
-//
-//volatile uint16_t acSampleCount = 0;
-//volatile uint8_t acWindowReady = 0;
-//
-//volatile uint16_t ADCReading[NO_CHANNELS];
-//volatile uint8_t areReadingsReady = 0;
-//volatile uint8_t ADCSelectedChannel = 0;
-//volatile uint8_t discardNextSample = 0;
-//
-//volatile uint8_t timerFlag = 1;
-//
-//void UART_init(void) {
-//    UBRR0H = (unsigned char)(UBRR_VALUE >> 8);
-//    UBRR0L = (unsigned char)UBRR_VALUE;
-//
-//    UCSR0B = (1 << TXEN0);
-//    UCSR0C = (1 << USBS0) | (1 << UCSZ01) | (1 << UCSZ00);
-//}
-//
-//void UART_transmit(char data) {
-//    while (!(UCSR0A & (1 << UDRE0))) {
-//    }
-//    UDR0 = data;
-//}
-//
-//void UART_print(const char *str) {
-//    while (*str) {
-//        UART_transmit(*str++);
-//    }
-//}
-//
-//void UART_print_uint(uint16_t value) {
-//    char buffer[8];
-//    snprintf(buffer, sizeof(buffer), "%u", value);
-//    UART_print(buffer);
-//}
-//
-//void UART_print_float_2dp(float value) {
-//    if (value < 0) {
-//        UART_print("-");
-//        value = -value;
-//    }
-//
-//    uint16_t scaled = (uint16_t)(value * 100.0f + 0.5f);
-//    uint16_t whole = scaled / 100;
-//    uint16_t frac  = scaled % 100;
-//
-//    char buffer[16];
-//    snprintf(buffer, sizeof(buffer), "%u.%02u", whole, frac);
-//    UART_print(buffer);
-//}
-//
-////OCR2A triggers approx every 30ms
-//void setup_timer(void){
-//    TCCR2A = (1 << WGM21);
-//    OCR2A = 255;
-//    TCCR2B |= (1 << CS22) | (1 << CS21) | (1 << CS20);
-//    TIMSK2 |= (1 << OCIE2A);
-//}
-//
-//ISR(TIMER2_COMPA_vect){
-//    timerFlag = 1;
-//}
-//
-//void setup_ADC(void) {
-//    ADMUX = (0 << REFS1) | (0 << REFS0) | (0 << ADLAR);
-//    ADCSRA = (1 << ADPS2) | (1 << ADPS1) | (1 << ADEN) | (1 << ADIE);
-//}
-//
-//void ADC_start_conversion(void) {
-//    ADCSRA |= (1 << ADSC);
-//}
-//
-//void ADC_select_channel(uint8_t channel) {
-//    channel &= 0x0F;
-//    ADMUX &= ~((1 << MUX3) | (1 << MUX2) | (1 << MUX1) | (1 << MUX0));
-//    ADMUX |= channel;
-//}
-//
-//ISR(ADC_vect) {
-//
-//    uint16_t channel = ADCSelectedChannel;
-//    uint16_t reading = ADC;
-//
-//    if (discardNextSample) {
-//        discardNextSample = 0;
-//        ADC_start_conversion();
-//        return;
-//    }
-//
-//    ADCReading[channel] = reading;
-//
-//    if (channel == AC_VOLTAGE_CHANNEL && !acWindowReady) {
-//        acVoltageSum += reading;
-//        acVoltageSumSq += (uint32_t)reading * (uint32_t)reading;
-//
-//        if (reading < acVoltageMin) acVoltageMin = reading;
-//        if (reading > acVoltageMax) acVoltageMax = reading;
-//    }
-//    if (channel == AC_CURRENT_HIGH_CHANNEL && !acWindowReady) {
-//        acCurrentHighSum += reading;
-//        acCurrentHighSumSq += (uint32_t)reading * (uint32_t)reading;
-//
-//        if (reading < acCurrentHighMin) acCurrentHighMin = reading;
-//        if (reading > acCurrentHighMax) acCurrentHighMax = reading;
-//
-//        acSampleCount++;
-//        if (acSampleCount >= NUM_SAMPLES) {
-//            acWindowReady = 1;
-//        }
-//    }
-//
-//    ADCSelectedChannel++;
-//    if (ADCSelectedChannel >= NO_CHANNELS){
-//        ADCSelectedChannel = 0;
-//        areReadingsReady = 1;
-//    }
-//
-//    ADC_select_channel(ADCSelectedChannel);
-//    discardNextSample = 1;
-//    ADC_start_conversion();
-//}
-//
-//float calculate_DC_voltage(uint16_t ADCreading) {
-//
-//    float scalingRatio =  (4.724f / 10.0f);
-//    float errorRatio = 1.0f;
-//
-//    float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
-//
-//    float Vin = (scaledVout / scalingRatio) * errorRatio;
-//
-//    return Vin;
-//}
-//
-//float calculate_DC_current(uint16_t ADCreading) {
-//
-//    float scalingRatio = 1.0f;
-//    float errorRatio = 1.0f;
-//
-//    float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
-//
-//    float Vin = (scaledVout / scalingRatio) * errorRatio;
-//
-//    return Vin;
-//}
-//
-//float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count) {
-//    if (count == 0) {
-//        return 0.0f;
-//    }
-//
-//    float mean = (float)sum / (float)count;
-//    float meanSq = (float)sumSq / (float)count;
-//
-//    float variance = meanSq - (mean * mean);
-//
-//    if (variance < 0.0f) {
-//        variance = 0.0f;
-//    }
-//
-//    return sqrtf(variance);
-//}
-//
-//float ADC_counts_to_volts(float ADCCounts) {
-//    return ADCCounts * VREF / 1023.0f;
-//}
-//
-//float calculate_AC_voltage_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
-//    float scalingRatio = (1.4f / 14.14f);
-//    float errorRatio = 1.0f;
-//
-//    float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
-//    float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
-//
-//    return (ADCRMSVoltage / scalingRatio) * errorRatio;
-//}
-//
-//float calculate_AC_current_high_RMS(uint32_t sum, uint32_t sumSq, uint16_t count) {
-//    float scalingRatio = 1.0f;
-//    float currentToVoltageRatio = 1.0f;
-//    float errorRatio = 1.0f;
-//
-//    float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
-//    float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
-//    float currentRMS = (ADCRMSVoltage / scalingRatio) * currentToVoltageRatio;
-//
-//    return currentRMS * errorRatio;
-//}
-//
-//void UART_print_measurements(float arr[NO_MEASUREMENTS]) {
-//    UART_print("[");
-//
-//    for (uint8_t i = 0; i < NO_MEASUREMENTS; i++) {
-//        UART_print_float_2dp(arr[i]);
-//
-//        if (i < NO_MEASUREMENTS - 1) {
-//            UART_print(", ");
-//        }
-//    }
-//
-//    UART_print("]\r\n");
-//}
-//
-//int main(void) {
-//    UART_init();
-//    setup_ADC();
-//    setup_timer();
-//
-//    ADC_select_channel(DC_VOLTAGE_CHANNEL);
-//
-//    sei();
-//    ADC_start_conversion();
-//
-//    float measurements[NO_MEASUREMENTS];
-//    uint16_t localDCVoltageADC;
-//    uint16_t localDCCurrentADC;
-//
-//    for (uint8_t i = 0; i < NO_MEASUREMENTS; i++) {
-//        measurements[i] = 4.2f;
-//    }
-//
-//    while (1) {
-//        if (acWindowReady){
-//            uint32_t localACVoltageSum;
-//            uint32_t localACVoltageSumSq;
-//
-//            uint32_t localACCurrentHighSum;
-//            uint32_t localACCurrentHighSumSq;
-//
-//            uint16_t localACSampleCount;
-//
-//            cli();
-//
-//            localACVoltageSum = acVoltageSum;
-//            localACVoltageSumSq = acVoltageSumSq;
-//
-//            localACCurrentHighSum = acCurrentHighSum;
-//            localACCurrentHighSumSq = acCurrentHighSumSq;
-//
-//            localACSampleCount = acSampleCount;
-//
-//            acVoltageSum = 0;
-//            acVoltageSumSq = 0;
-//            acVoltageMin = 1023;
-//            acVoltageMax = 0;
-//
-//            acCurrentHighSum = 0;
-//            acCurrentHighSumSq = 0;
-//            acCurrentHighMin = 1023;
-//            acCurrentHighMax = 0;
-//
-//            acSampleCount = 0;
-//            acWindowReady = 0;
-//
-//            sei();
-//
-//            measurements[MEAS_AC_VOLTAGE] =
-//                calculate_AC_voltage_RMS(localACVoltageSum,
-//                                         localACVoltageSumSq,
-//                                         localACSampleCount);
-//
-//            measurements[MEAS_AC_CURRENT_HIGH] =
-//                calculate_AC_current_high_RMS(localACCurrentHighSum,
-//                                              localACCurrentHighSumSq,
-//                                              localACSampleCount);
-//        }
-//
-//        if (areReadingsReady) {
-//            cli();
-//
-//            localDCVoltageADC = ADCReading[DC_VOLTAGE_CHANNEL];
-//            localDCCurrentADC = ADCReading[DC_CURRENT_CHANNEL];
-//
-//            areReadingsReady = 0;
-//            sei();
-//
-//            measurements[MEAS_DC_VOLTAGE] = calculate_DC_voltage(localDCVoltageADC);
-//            measurements[MEAS_DC_CURRENT] = calculate_DC_current(localDCCurrentADC);
-//
-//            if (timerFlag) {
-//                timerFlag = 0;
-//                UART_print_measurements(measurements);
-//            }
-//        }
-//    }
-//
-//    return 0;
-//}
