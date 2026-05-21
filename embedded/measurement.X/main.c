@@ -97,8 +97,8 @@ volatile uint8_t tx_tail = 0;
 #define MEAS_AC_VOLTAGE 2
 #define MEAS_AC_CURRENT 3
 #define MEAS_IS_LOW_CURRENT_MODE 4
-#define MEAS_AC_VOLTAGE_VPP 5
-#define MEAS_AC_CURRENT_VPP 6
+#define MEAS_AC_VOLTAGE_PK_PK 5
+#define MEAS_AC_CURRENT_PK_PK 6
 #define MEAS_PHASE_DIFFERENCE 7
 #define MEAS_POWER_FACTOR 8
 #define MEAS_FREQUENCY 9
@@ -129,6 +129,12 @@ volatile uint8_t tx_tail = 0;
 
 #define PHASE_DIFFERENCE_ERROR_RATIO 1.0f
 #define PHASE_DIFFERENCE_ERROR_SUM 0.0f
+
+#define AC_VOLTAGE_PK_PK_ERROR_RATIO 1.0f
+#define AC_VOLTAGE_PK_PK_ERROR_SUM 1.0f
+
+#define AC_CURRENT_PK_PK_ERROR_RATIO 1.0f
+#define AC_CURRENT_PK_PK_ERROR_SUM 0.0f
 
 
 // FOR FREQUENCY MEASUREMENT
@@ -997,6 +1003,25 @@ float calculate_AC_reactive_power(float voltageRMS, float currentRMS, float phas
     return reactivePower;
 }
 
+float calculate_voltage_pk_pk(float voltageRMS){
+    float voltagePkPk = voltageRMS * 2.2828;
+    float voltagePkPkAdjusted = voltagePkPk * AC_VOLTAGE_PK_PK_ERROR_RATIO + AC_VOLTAGE_PK_PK_ERROR_SUM;
+    return voltagePkPkAdjusted;
+}
+
+float calculate_current_pk_pk(float currentRMS){
+    // Check if the AC current is UL
+    if (currentRMS == UNDER_LIMIT_CODE)
+    {
+        return UNDER_LIMIT_CODE; // Send "37" to the GUI/LCD
+    }
+    
+    float currentPkPk = currentRMS * 2.2828;
+    float currentPkPkAdjusted = currentPkPk * AC_CURRENT_PK_PK_ERROR_RATIO + AC_CURRENT_PK_PK_ERROR_SUM;
+    return currentPkPkAdjusted;
+}
+
+
 void init_MCU_GPIO(){
     //Use D3 to blink LED when a new measurement is taken
     DDRD |= 1 << PORTD3;
@@ -1082,6 +1107,8 @@ uint8_t process_measurements(float *measurements)
         measurements[MEAS_AC_APPARENT_POWER] = calculate_AC_apparent_power(measurements[MEAS_AC_VOLTAGE], measurements[MEAS_AC_CURRENT]);
 
         // Calculate pk to pk voltage and current
+        measurements[MEAS_AC_VOLTAGE_PK_PK] = calculate_voltage_pk_pk(measurements[MEAS_AC_VOLTAGE]);
+        measurements[MEAS_AC_CURRENT_PK_PK] = calculate_current_pk_pk(measurements[MEAS_AC_CURRENT]);
         
         processedNewWindow = 1;
     }
