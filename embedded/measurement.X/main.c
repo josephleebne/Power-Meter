@@ -737,18 +737,36 @@ ISR(ADC_vect)
         {
             acVoltageSum += reading;
             acVoltageSumSq += (uint32_t)reading * (uint32_t)reading;
+            
+            //Find the peaks
+            if (reading > acVoltageMax){
+                acVoltageMax = reading;
+            }
+            if (reading < acVoltageMin){
+                acVoltageMin = reading;
+            }
         }
 
         if (channel == AC_CURRENT_CHANNEL)
         {
             acCurrentSum += reading;
             acCurrentSumSq += (uint32_t)reading * (uint32_t)reading;
+            
+            //Find the peaks
+            if (reading > acCurrentMax){
+                acCurrentMax = reading;
+            }
+            if (reading < acCurrentMin){
+                acCurrentMin = reading;
+            }
 
             acSampleCount++;
             if (acSampleCount >= NUM_AC_SAMPLES)
             {
                 acDataReady = 1;
                 acProcessingBusy = 1;
+                
+                
             }
         }
     }
@@ -816,7 +834,7 @@ float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count)
     return sqrtf(variance);
 }
 
-float ADC_counts_to_volts(float ADCCounts)
+float ADC_counts_to_meas(float ADCCounts)
 {
     return ADCCounts * VREF / 1023.0f;
 }
@@ -826,7 +844,7 @@ float calculate_AC_voltage_RMS(uint32_t sum, uint32_t sumSq, uint16_t count)
     float scalingRatio = (1.4f / 14.14f);
 
     float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
-    float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
+    float ADCRMSVoltage = ADC_counts_to_meas(RMSCounts);
 
     float vin = (ADCRMSVoltage / scalingRatio) * turnsRatio;
     float vinCorrected = vin * AC_VOLTAGE_ERROR_RATIO + AC_VOLTAGE_ERROR_SUM;
@@ -839,7 +857,7 @@ float calculate_AC_current_RMS(uint32_t sum, uint32_t sumSq, uint16_t count)
     float currentToVoltageRatio = 10.0f;
 
     float RMSCounts = calculate_RMS_ADC(sum, sumSq, count);
-    float ADCRMSVoltage = ADC_counts_to_volts(RMSCounts);
+    float ADCRMSVoltage = ADC_counts_to_meas(RMSCounts);
     float currentRMS = (ADCRMSVoltage / scalingRatio) * currentToVoltageRatio;
     float currentRMSCorrected = currentRMS * AC_CURRENT_HIGH_ERROR_RATIO + AC_CURRENT_HIGH_ERROR_SUM;
 
@@ -1003,22 +1021,52 @@ float calculate_AC_reactive_power(float voltageRMS, float currentRMS, float phas
     return reactivePower;
 }
 
-float calculate_voltage_pk_pk(float voltageRMS){
-    float voltagePkPk = voltageRMS * 2.2828;
-    float voltagePkPkAdjusted = voltagePkPk * AC_VOLTAGE_PK_PK_ERROR_RATIO + AC_VOLTAGE_PK_PK_ERROR_SUM;
-    return voltagePkPkAdjusted;
-}
-
-float calculate_current_pk_pk(float currentRMS){
-    // Check if the AC current is UL
-    if (currentRMS == UNDER_LIMIT_CODE)
-    {
-        return UNDER_LIMIT_CODE; // Send "37" to the GUI/LCD
+float calculate_voltage_pk_pk(uint16_t rawMax, uint16_t rawMin)
+{
+    //Underflow protection
+    if (rawMax < rawMin){
+        return UNDER_LIMIT_CODE;
+    } 
+    
+    static float filteredCounts = -1.0f;
+    uint16_t rawPkPk = rawMax - rawMin;
+    
+    //Check if this is the first reading
+    if (filteredCounts < 0){
+        filteredCounts = (float)rawPkPk;
+    } 
+    else {
+        filteredCounts += (rawPkPk - filteredCounts) * 0.125f;
     }
     
-    float currentPkPk = currentRMS * 2.2828;
-    float currentPkPkAdjusted = currentPkPk * AC_CURRENT_PK_PK_ERROR_RATIO + AC_CURRENT_PK_PK_ERROR_SUM;
-    return currentPkPkAdjusted;
+    float voltagePkPk = ADC_counts_to_meas(filteredCounts);
+    float voltagePkPkCorrected = voltagePkPk * AC_VOLTAGE_PK_PK_ERROR_RATIO + AC_VOLTAGE_PK_PK_ERROR_SUM;
+    
+    return voltagePkPkCorrected;   
+}
+
+float calculate_current_pk_pk(uint16_t rawMax, uint16_t rawMin)
+{
+    //Underflow protection
+    if (rawMax < rawMin){
+        return UNDER_LIMIT_CODE;
+    } 
+    
+    static float filteredCounts = -1.0f;
+    uint16_t rawPkPk = rawMax - rawMin;
+    
+    //Check if this is the first reading
+    if (filteredCounts < 0){
+        filteredCounts = (float)rawPkPk;
+    } 
+    else {
+        filteredCounts += (rawPkPk - filteredCounts) * 0.125f;
+    }
+    
+    float currentPkPk = ADC_counts_to_meas(filteredCounts);
+    float currentPkPkCorrected = currentPkPk * AC_CURRENT_PK_PK_ERROR_RATIO + AC_CURRENT_PK_PK_ERROR_SUM;
+    
+    return currentPkPkCorrected;   
 }
 
 
@@ -1060,6 +1108,12 @@ uint8_t process_measurements(float *measurements)
         uint32_t localISum   = acCurrentSum;
         uint32_t localISumSq = acCurrentSumSq;
         uint16_t localSamples = acSampleCount;
+        
+        //Pk-Pk measurement local snapshots
+        uint16_t localVMax = acVoltageMax;
+        uint16_t localVMin = acVoltageMin;
+        uint16_t localIMax = acCurrentMax;
+        uint16_t localIMin = acCurrentMin;
         
         //Frequency and Phase local timing snapshots
         uint32_t localPeriodTicks = periodTicks;
@@ -1107,8 +1161,8 @@ uint8_t process_measurements(float *measurements)
         measurements[MEAS_AC_APPARENT_POWER] = calculate_AC_apparent_power(measurements[MEAS_AC_VOLTAGE], measurements[MEAS_AC_CURRENT]);
 
         // Calculate pk to pk voltage and current
-        measurements[MEAS_AC_VOLTAGE_PK_PK] = calculate_voltage_pk_pk(measurements[MEAS_AC_VOLTAGE]);
-        measurements[MEAS_AC_CURRENT_PK_PK] = calculate_current_pk_pk(measurements[MEAS_AC_CURRENT]);
+        measurements[MEAS_AC_VOLTAGE_PK_PK] = calculate_voltage_pk_pk(localVMax, localVMin);
+        measurements[MEAS_AC_VOLTAGE_PK_PK] = calculate_voltage_pk_pk(localIMax, localIMin);
         
         processedNewWindow = 1;
     }
