@@ -33,10 +33,6 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 #define DISPLAY_CS_PORT PORTB
 #define DISPLAY_CS_PIN 2
 
-#define DISPLAY_DC_DIR DDRB
-#define DISPLAY_DC_PORT PORTB
-#define DISPLAY_DC_PIN 1
-
 #define DISPLAY_RESET_DIR DDRB
 #define DISPLAY_RESET_PORT PORTB
 #define DISPLAY_RESET_PIN 0
@@ -48,6 +44,13 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 #define RIGHT (PIND & (1 << 6))
 #define LEFT (PIND & (1 << 7))
 
+#define UP_INDEX 0
+#define DOWN_INDEX 1
+#define RIGHT_INDEX 2
+#define LEFT_INDEX 3
+#define BACK_INDEX 4
+#define ENTER_INDEX 5
+
 #define P_CPU_NS (1000000000UL / F_CPU)
 
 #define MEASUREMENT_1_ADDRESS 0
@@ -57,7 +60,7 @@ LOCKBITS = 0xFF; // {LB=NO_LOCK, BLB0=NO_LOCK, BLB1=NO_LOCK}
 #define BACKLIGHT_ADDRESS 4
 #define TURNS_RATIO_ADDRESS 5
 
-#define MEASUREMENTS 15
+#define MEASUREMENTS 13
 
 // ************************      RTC DEFINES      *****************************
 // RTC / DS1307
@@ -223,12 +226,12 @@ void lcd_init();
 void init();
 void DrawPCIcon();
 void DrawTime();
-void MainScreenDraw(float *measurements); // LCD code slightly changed by joe
-void MainScreen(float *measurements);
+void MainScreenDraw(float* measurements); // LCD code slightly changed by joe
+void MainScreen(float* measurements);
 void MeasurementSelectDraw(void);
-void MeasurementSelect();
+void MeasurementSelect(float* measurements);
 void SettingsDraw();
-void Settings();
+void Settings(float* measurements);
 void TurnsRatioMenu();
 void TurnsRatioMenuDraw();
 void DrawScreen();
@@ -253,52 +256,60 @@ u8g2_t u8g2;
 float MenuSettings[] = {0, 0, 0, 0, 4, 26.788}; // Measurement 1, Measurement 2, Measurement 3, Measurement 4, BacklightIndex, TurnsRatio
 int MenuSettingsEEPROMAddresses[] = {MEASUREMENT_1_ADDRESS, MEASUREMENT_2_ADDRESS, MEASUREMENT_3_ADDRESS, MEASUREMENT_4_ADDRESS, BACKLIGHT_ADDRESS, TURNS_RATIO_ADDRESS};
 
-/* Not correct anymore, see zulip for updated array format
+/*
 DC Voltage,
-DC Current,
-AC Voltage RMS,
-AC Current (high current mode) RMS,
-AC Current (low current mode) RMS,
-AC Voltage Vpp,
-AC Current (high current mode) Vpp,
-AC Current (low current mode) Vpp,
-        phase difference,
-        power factor,
-        frequency,
-        DC power,
-        AC real power,
-        AC reactive power,
+DC Current, 
+AC Voltage RMS, 
+AC Current RMS, 
+AC Voltage Vpp, 
+AC Current Vpp, 
+        phase difference, 
+        power factor, 
+        frequency, 
+        DC power, 
+        AC real power, 
+        AC reactive power, 
         AC apparent power
-   */
+   */     
 
-// char* MeasurementName[13] = {"DCV (V)","DCC (A)","DCP (W)","ACV (V)","ACC (A)","ACF (Hz)","ACPD (Degrees)","ACP (W)","ACRP (VAR)","ACAP (VA)", "ACPF","ACPV (V)","ACPC (A)"};
-char *MeasurementName[15] = {"DCV (V)",
-                             "DCC (A)",
-                             "ACV (V)",
-                             "ACCH (A)",
-                             "ACCL (A)",
-                             "ACVPP (V)",
-                             "ACCPPH (A)",
-                             "ACCPPL (A)",
-                             "PD",
-                             "PF",
-                             "F (Hz)",
-                             "DCP (W)",
-                             "ACRP (W)",
-                             "ACRRP (W)",
-                             "ACAP (W)"};
+char* MeasurementName[MEASUREMENTS] = {"DCV (V)",
+                                        "DCC (A)",
+                                        "ACV (V)",
+                                        "ACC (A)",
+                                        "ACVPP (V)",
+                                        "ACCPP (A)",
+                                        "PD",
+                                        "PF",
+                                        "F (Hz)",
+                                        "DCP (W)",
+                                        "ACRP (W)",
+                                        "ACRRP (W)",
+                                        "ACAP (W)"};
 
 int Menu = 0;                             // 0 = main screen, 1 = measurement select, 2 = settings, 3 = edit turns ratio
 int SelectPosition[2];                    // 0 = row position for the main screen, 1 = secondary position used for other menus
 int Backlight[] = {0, 64, 128, 192, 255}; // Values for OCR0B for Backlight
 int BacklightIndexCopy = 4;               // Copy of Backlight Index
 float TurnsRatioCopy = 26.788;            // Copy of Transformer Turns Ratio
-int ButtonTurn = 1;                       // Button turn baton
+int ButtonTurn = 0;                       // Button turn baton
+
+struct buttonStruct {
+	uint32_t buttonPin;
+	int buttonState;
+	int oldButtonState;
+	int detectedButtonState;
+	int buttonTick;
+	int Pressed;
+};
+
+struct buttonStruct buttonsArray[6];
 
 //Timer 2 variables
 volatile uint32_t timer2Overflows = 0;
 volatile uint8_t timer2Flag = 0;
+volatile uint8_t timer2LCDRefreshCounter = 0;
 volatile uint8_t LcdTick = 0;
+volatile uint8_t timer2ButtonCheckFlag = 0;
 
 // *************************      RTC FUNCTIONS      ******************************
 void TWI_init(void)
@@ -1244,7 +1255,6 @@ uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void
         DISPLAY_CLK_DIR |= 1 << DISPLAY_CLK_PIN;
         DISPLAY_DATA_DIR |= 1 << DISPLAY_DATA_PIN;
         DISPLAY_CS_DIR |= 1 << DISPLAY_CS_PIN;
-        DISPLAY_DC_DIR |= 1 << DISPLAY_DC_PIN;
         DISPLAY_RESET_DIR |= 1 << DISPLAY_RESET_PIN;
         break;                    // can be used to setup pins
     case U8X8_MSG_GPIO_SPI_CLOCK: // Clock pin: Output level in arg_int
@@ -1265,13 +1275,6 @@ uint8_t u8x8_avr_gpio_and_delay(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void
         else
             DISPLAY_CS_PORT &= ~(1 << DISPLAY_CS_PIN);
         break;
-    case U8X8_MSG_GPIO_DC: // DC (data/cmd, A0, register select) pin: Output level in arg_int
-        if (arg_int)
-            DISPLAY_DC_PORT |= (1 << DISPLAY_DC_PIN);
-        else
-            DISPLAY_DC_PORT &= ~(1 << DISPLAY_DC_PIN);
-        break;
-
     case U8X8_MSG_GPIO_RESET: // Reset pin: Output level in arg_int
         if (arg_int)
             DISPLAY_RESET_PORT |= (1 << DISPLAY_RESET_PIN);
@@ -1324,9 +1327,10 @@ void setup_timer2(void)
     // CTC Mode
     TCCR2A = (1 << WGM21);
 
-    // Set for ~32ms interval at 8MHz
-    // 8,000,000 / 1024 (prescaler) / 250 (OCR2A) = 31.25 Hz
-    OCR2A = 249;
+    // Set for ~5ms interval at 8MHz
+    // (8,000,000 / 1024) for 1 sec at 8M with 1024 prescaler
+    // (8,000,000 / 1024) / 200 = 39
+    OCR2A = 39;
     //1024 prescaler
     TCCR2B = (1 << CS22) | (1 << CS21) | (1 << CS20);
 
@@ -1338,7 +1342,44 @@ ISR(TIMER2_COMPA_vect)
 {
     timer2Flag = 1;
     timer2Overflows++;
-    LcdTick = 1;
+    timer2LCDRefreshCounter++;
+    if (timer2LCDRefreshCounter == 200) {
+        LcdTick = 1;        // Now the LCD refreshes from here!
+        timer2LCDRefreshCounter = 0;
+    }
+    timer2ButtonCheckFlag = 1;
+}
+
+void buttonCheck() {
+    if (timer2ButtonCheckFlag) {
+        for (int i = 0; i<6; i++) {
+            if ((buttonsArray[i]).buttonPin) {
+                (buttonsArray[i]).detectedButtonState = 1;
+            } else {
+                (buttonsArray[i]).detectedButtonState = 0;
+            }
+            if ((buttonsArray[i]).detectedButtonState == (buttonsArray[i]).buttonState) {
+                /* Same as current stable state — reset counter */
+                (buttonsArray[i]).buttonTick = 0;
+            } else {
+                /* Different from stable state — count up */
+                (buttonsArray[i]).buttonTick++;
+                if ((buttonsArray[i]).buttonTick >= 3) {
+                    /* State has been stable long enough — accept it */
+                    (buttonsArray[i]).buttonState = (buttonsArray[i]).detectedButtonState;
+                    (buttonsArray[i]).buttonTick = 0;
+                    /* Detect edges */
+                    if (((buttonsArray[i]).detectedButtonState) && !((buttonsArray[i]).oldButtonState) && ButtonTurn) {
+                        (buttonsArray[i]).Pressed = 1;  /* Falling edge: just released */
+                    } else if (!((buttonsArray[i]).detectedButtonState) && ((buttonsArray[i]).oldButtonState)) {
+                        ButtonTurn = 1;
+                    }
+                    (buttonsArray[i]).oldButtonState = (buttonsArray[i]).detectedButtonState;
+                }
+            }
+        }
+        timer2ButtonCheckFlag = 0;
+    }
 }
 
 void lcd_init(void)
@@ -1359,6 +1400,16 @@ void lcd_init(void)
     u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr);
     u8g2_SetDrawColor(&u8g2, 2);
 }
+
+void buttonInit(uint32_t buttonPin, int buttonIndex) {
+	(buttonsArray[buttonIndex]).buttonPin = buttonPin;
+	(buttonsArray[buttonIndex]).buttonState = 0;
+	(buttonsArray[buttonIndex]).oldButtonState = 0;
+	(buttonsArray[buttonIndex]).detectedButtonState = 0;
+	(buttonsArray[buttonIndex]).buttonTick = 0;
+	(buttonsArray[buttonIndex]).Pressed = 0;
+}
+
 
 void init()
 {
@@ -1382,10 +1433,6 @@ void init()
 
     // Enable global interrupts
     sei();
-
-    // To be removed after flashing the mcu
-    eepromUpdate(5, (float)turnsRatio);
-    MenuSettings[5] = turnsRatio;
 
     if (((int)eepromRead(MEASUREMENT_1_ADDRESS) >= 1) && ((int)eepromRead(MEASUREMENT_1_ADDRESS) <= 15))
     {
@@ -1423,19 +1470,31 @@ void init()
     OCR0B = Backlight[BacklightIndexCopy]; // Set Backlight
     turnsRatio = MenuSettings[5];
     TurnsRatioCopy = turnsRatio;
+
+    buttonInit(UP, UP_INDEX);
+	buttonInit(DOWN, DOWN_INDEX);
+	buttonInit(RIGHT, RIGHT_INDEX);
+	buttonInit(LEFT, LEFT_INDEX);
+	buttonInit(BACK, BACK_INDEX);
+	buttonInit(ENTER, ENTER_INDEX);
 }
 
 void DrawPCIcon()
 {
-    u8g2_SetDrawColor(&u8g2, 2);
     u8g2_DrawFrame(&u8g2, 121, 59, 5, 3);
     u8g2_DrawBox(&u8g2, 122, 62, 3, 1);
 }
 
 void DrawTime()
 {
-    u8g2_SetFont(&u8g2, u8g2_font_u8glib_4_hr); // Change to smaller font
-    u8g2_SetDrawColor(&u8g2, 2);
+    u8g2_SetFont(&u8g2, u8g2_font_u8glib_4_hr);// Change to smaller font
+    if (!Menu) {
+        u8g2_SetDrawColor(&u8g2, 2);
+    } else {
+		u8g2_SetDrawColor(&u8g2, 0);
+		u8g2_DrawBox(&u8g2, 0, 51, 128, 13);
+		u8g2_SetDrawColor(&u8g2, 1);
+	}
 
     char TimeString[20];
     if (rtcValid && rtcTimeSet)
@@ -1460,6 +1519,13 @@ void DrawTime()
     u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr);
 }
 
+void PCIconAndTime() {
+    DrawTime();
+    if (PIND & (1<<4)) {
+        DrawPCIcon();
+    }
+}
+
 void MainScreenDraw(float measurements[])
 {
     for (int i = 0; i < 5; i++)
@@ -1479,18 +1545,23 @@ void MainScreenDraw(float measurements[])
         if (i < 4)
         {
             u8g2_DrawStr(&u8g2, 1, 10 + (i * 13), MeasurementName[(int)MenuSettings[i]]); // MenuSettings stores the index for which measurement it is
-            char measurementBuffer[10];
-            int measurementInt = measurements[(int)MenuSettings[i]];
-            int afterDecimal = ((measurements[(int)MenuSettings[i]]) - measurementInt) * 100;
-            if (afterDecimal < 10)
-            {
-                sprintf(measurementBuffer, "%d.0%d", (int)measurementInt, (int)round(afterDecimal)); // Convert Measurement float value to string
-            }
-            else
-            {
-                sprintf(measurementBuffer, "%d.%d", (int)measurementInt, (int)round(afterDecimal)); // Convert Measurement float value to string
-            }
-            u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), measurementBuffer); // Each row is 9 high with 2 space in between
+            if (measurements[(int)MenuSettings[i]] == 37) {
+				u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), "UL");
+			} else {
+				char measurementBuffer[10];
+				int arrayOffset = 0;
+				if (MenuSettings[i] > 3) {
+					arrayOffset = 1;
+				}
+				int measurementInt = measurements[(int)MenuSettings[i] + arrayOffset];
+				int afterDecimal = ((measurements[(int)MenuSettings[i] + arrayOffset]) - measurementInt) * 100;
+				if (afterDecimal < 10) {
+					sprintf(measurementBuffer , "%d.0%d", (int)measurementInt, (int)round(afterDecimal));// Convert Measurement float value to string
+				} else {
+					sprintf(measurementBuffer , "%d.%d", (int)measurementInt, (int)round(afterDecimal));// Convert Measurement float value to string
+				}
+				u8g2_DrawStr(&u8g2, 47, 10 + (i * 13), measurementBuffer);
+			}
         }
         else
         {
@@ -1499,6 +1570,7 @@ void MainScreenDraw(float measurements[])
     }
     u8g2_SetDrawColor(&u8g2, 2);
     u8g2_DrawLine(&u8g2, 44, 1, 44, 48); // Line separating measurement name from measurement value
+    PCIconAndTime();
 }
 
 void MainScreen(float measurements[])
@@ -1506,9 +1578,8 @@ void MainScreen(float measurements[])
     MainScreenDraw(measurements); // Refreshes display constantly to display changing values.
     if (ButtonTurn)
     { // Attempts to prevent pressing of multiple buttons.
-        if (ENTER || RIGHT)
+        if (((buttonsArray[ENTER_INDEX]).Pressed) || ((buttonsArray[RIGHT_INDEX]).Pressed))
         { // Enter and right
-            ButtonTurn = 0;
             u8g2_SetDrawColor(&u8g2, 0);
             u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
             if (SelectPosition[0] < 4)
@@ -1527,19 +1598,21 @@ void MainScreen(float measurements[])
                 SettingsDraw();
                 u8g2_SendBuffer(&u8g2);
             }
-            ButtonTurn = 1;
-        }
-        else if (UP)
-        { // Up
             ButtonTurn = 0;
+			(buttonsArray[ENTER_INDEX]).Pressed = 0;
+			(buttonsArray[RIGHT_INDEX]).Pressed = 0;
+        }
+        else if ((buttonsArray[UP_INDEX]).Pressed)
+        { // Up
             SelectPosition[0]--;
             if (SelectPosition[0] < 0)
             {
                 SelectPosition[0] = 4;
             }
-            ButtonTurn = 1;
+            ButtonTurn = 0;
+			(buttonsArray[UP_INDEX]).Pressed = 0;
         }
-        else if (DOWN)
+        else if ((buttonsArray[DOWN_INDEX]).Pressed)
         { // Down
             if (OCR0B == 0)
             {
@@ -1549,13 +1622,13 @@ void MainScreen(float measurements[])
             {
                 OCR0B = 0; // Set Backlight
             }
-            ButtonTurn = 0;
             SelectPosition[0]++;
             if (SelectPosition[0] > 4)
             {
                 SelectPosition[0] = 0;
             }
-            ButtonTurn = 1;
+			ButtonTurn = 0;
+			(buttonsArray[DOWN_INDEX]).Pressed = 0;
         }
     }
 }
@@ -1586,42 +1659,51 @@ void MeasurementSelectDraw()
         { // Shows measurements below select
             idx = SelectPosition[1] + (i - SelectPosition[0]);
         }
-        while (idx < 0)
+        if (idx < 0) {
             idx += MEASUREMENTS;
-        while (idx >= MEASUREMENTS)
+        }
+        if (idx >= MEASUREMENTS) {
             idx -= MEASUREMENTS;
+        }
         u8g2_DrawStr(&u8g2, 50, 10 + (i * 13), MeasurementName[idx]);
     }
     u8g2_SetDrawColor(&u8g2, 0);
     u8g2_DrawBox(&u8g2, 0, (4 * 13) - 1, 128, 13);
     u8g2_SetDrawColor(&u8g2, 2);
     u8g2_DrawLine(&u8g2, 44, 1, 44, 48); // Line separating measurement name from measurement value
+    PCIconAndTime();
 }
 
 // u8g2_ClearBuffer(&u8g2);
 // u8g2_SendBuffer(&u8g2);
 
-void MeasurementSelect()
+void MeasurementSelect(float* measurements)
 {
     if (ButtonTurn)
     {
-        if (ENTER || LEFT)
+        if (((buttonsArray[ENTER_INDEX]).Pressed) || ((buttonsArray[LEFT_INDEX]).Pressed))
         { // Enter and left
-            ButtonTurn = 0;
             MenuSettings[SelectPosition[0]] = SelectPosition[1];                                 // Confirm measurement selection
             eepromUpdate(MenuSettingsEEPROMAddresses[SelectPosition[0]], SelectPosition[1] + 1); // Update in EEPROM
             Menu = 0;
-            ButtonTurn = 1;
+            ButtonTurn = 0;
+            u8g2_ClearBuffer(&u8g2);
+            MainScreenDraw(measurements);
+            u8g2_SendBuffer(&u8g2);
+			(buttonsArray[ENTER_INDEX]).Pressed = 0;
+			(buttonsArray[LEFT_INDEX]).Pressed = 0;
         }
-        else if (BACK)
+        else if ((buttonsArray[BACK_INDEX]).Pressed)
         { // Back
-            ButtonTurn = 0;
             Menu = 0;
-            ButtonTurn = 1;
-        }
-        else if (UP)
-        { // Up
+            u8g2_ClearBuffer(&u8g2);
+            MainScreenDraw(measurements);
+            u8g2_SendBuffer(&u8g2);
             ButtonTurn = 0;
+            (buttonsArray[BACK_INDEX]).Pressed = 0;
+        }
+        else if ((buttonsArray[UP_INDEX]).Pressed)
+        { // Up
             SelectPosition[1]--;
             if (SelectPosition[1] < 0)
             {
@@ -1630,11 +1712,11 @@ void MeasurementSelect()
             u8g2_ClearBuffer(&u8g2);
             MeasurementSelectDraw();
             u8g2_SendBuffer(&u8g2);
-            ButtonTurn = 1;
-        }
-        else if (DOWN)
-        { // Down
             ButtonTurn = 0;
+            (buttonsArray[UP_INDEX]).Pressed = 0;
+        }
+        else if ((buttonsArray[DOWN_INDEX]).Pressed)
+        { // Down
             SelectPosition[1]++;
             if (SelectPosition[1] > (MEASUREMENTS - 1))
             {
@@ -1643,26 +1725,27 @@ void MeasurementSelect()
             u8g2_ClearBuffer(&u8g2);
             MeasurementSelectDraw();
             u8g2_SendBuffer(&u8g2);
-            ButtonTurn = 1;
+            ButtonTurn = 0;
+            (buttonsArray[DOWN_INDEX]).Pressed = 0;
         }
     }
 }
 
 void SettingsDraw()
 {
-    // u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr); // Reset font after returning from TurnsRatioMenuDraw
+    u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr); // Reset font after returning from TurnsRatioMenuDraw
     for (int i = 0; i < 2; i++)
     {
         if (i == SelectPosition[0])
         {
             u8g2_SetDrawColor(&u8g2, 1);
-            u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
+            u8g2_DrawBox(&u8g2, 0, i * 14, 128, 14);
             u8g2_SetDrawColor(&u8g2, 0);
         }
         else
         {
             u8g2_SetDrawColor(&u8g2, 0);
-            u8g2_DrawBox(&u8g2, 0, (i * 13) - 1, 128, 13);
+            u8g2_DrawBox(&u8g2, 0, i * 14, 128, 14);
             u8g2_SetDrawColor(&u8g2, 1);
         }
         if (i == 0)
@@ -1676,67 +1759,71 @@ void SettingsDraw()
         }
         else
         {
-            u8g2_DrawStr(&u8g2, 1, 24, "Turns Ratio:");
+            u8g2_DrawStr(&u8g2, 1, 25, "Turns Ratio:");
 
-            char turnsRatioBuffer[10];
+            // Convert TurnsRatio float value to string
+            char turnsRatioBuffer[20]; 
             int turnsRatioInt = TurnsRatioCopy;
-            int afterDecimal = (TurnsRatioCopy - turnsRatioInt) * 100;
-            if (afterDecimal < 10)
-            {
-                sprintf(turnsRatioBuffer, "%d.0%d", (int)turnsRatioInt, (int)round(afterDecimal)); // Convert Measurement float value to string
-            }
-            else
-            {
-                sprintf(turnsRatioBuffer, "%d.%d", (int)turnsRatioInt, (int)round(afterDecimal)); // Convert Measurement float value to string
+            int afterDecimal = (TurnsRatioCopy - turnsRatioInt) * 1000;
+            if (afterDecimal < 10) {
+                sprintf(turnsRatioBuffer , "%d.00%d", (int)turnsRatioInt, (int)round(afterDecimal));
+            } else if ((afterDecimal < 100) && (afterDecimal >= 10)) {
+                sprintf(turnsRatioBuffer , "%d.0%d", (int)turnsRatioInt, (int)round(afterDecimal));
+            } else {
+                sprintf(turnsRatioBuffer , "%d.%d", (int)turnsRatioInt, (int)round(afterDecimal));
             }
 
-            u8g2_DrawStr(&u8g2, 70, 24, turnsRatioBuffer);
+            u8g2_DrawStr(&u8g2, 62, 25, turnsRatioBuffer);
         }
     }
+    PCIconAndTime();
 }
 
-void Settings()
+void Settings(float* measurements)
 {
     SettingsDraw();
     if (ButtonTurn)
     {
-        if (PINB & (1 << 1))
+        if ((buttonsArray[ENTER_INDEX]).Pressed)
         { // Enter
             u8g2_SetDrawColor(&u8g2, 0);
             u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
             if (SelectPosition[1] == 1)
             { // Into transformer turns ratio edit screen
-                ButtonTurn = 0;
                 Menu = 3;
                 SelectPosition[1] = 0;
-                ButtonTurn = 1;
                 u8g2_ClearBuffer(&u8g2);
                 TurnsRatioMenuDraw();
                 u8g2_SendBuffer(&u8g2);
             }
             else
             { // Confirm Backlight setting
-                ButtonTurn = 0;
                 Menu = 0;
                 MenuSettings[4] = BacklightIndexCopy;
                 OCR0B = Backlight[(int)MenuSettings[4]];
                 eepromUpdate(BACKLIGHT_ADDRESS, BacklightIndexCopy);
-                ButtonTurn = 1;
+                u8g2_ClearBuffer(&u8g2);
+                MainScreen(measurements);
+                u8g2_SendBuffer(&u8g2);
             }
+            ButtonTurn = 0;
+            (buttonsArray[ENTER_INDEX]).Pressed = 0;
         }
-        else if ((PINB & (1 << 4)))
+        else if ((buttonsArray[BACK_INDEX]).Pressed)
         { // Back. Exit settings without saving backlight setting changes
             u8g2_SetDrawColor(&u8g2, 0);
             u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
-            ButtonTurn = 0;
             Menu = 0;
             BacklightIndexCopy = (int)MenuSettings[4]; // Return without saving Backlight changes
             OCR0B = Backlight[BacklightIndexCopy];
-            ButtonTurn = 1;
-        }
-        else if ((PINB & (1 << 6)))
-        { // Up
+            u8g2_ClearBuffer(&u8g2);
+            MainScreen(measurements);
+            u8g2_SendBuffer(&u8g2);
             ButtonTurn = 0;
+            (buttonsArray[BACK_INDEX]).Pressed = 0;
+        }
+        else if ((buttonsArray[UP_INDEX]).Pressed)
+        { // Up
             SelectPosition[1]--;
             if (SelectPosition[1] < 0)
             {
@@ -1745,11 +1832,11 @@ void Settings()
             u8g2_ClearBuffer(&u8g2);
             SettingsDraw();
             u8g2_SendBuffer(&u8g2);
-            ButtonTurn = 1;
-        }
-        else if ((PINB & (1 << 7)))
-        { // Down
             ButtonTurn = 0;
+            (buttonsArray[UP_INDEX]).Pressed = 0;
+        }
+        else if ((buttonsArray[DOWN_INDEX]).Pressed)
+        { // Down
             SelectPosition[1]++;
             if (SelectPosition[1] > 1)
             {
@@ -1758,23 +1845,32 @@ void Settings()
             u8g2_ClearBuffer(&u8g2);
             SettingsDraw();
             u8g2_SendBuffer(&u8g2);
-            ButtonTurn = 1;
-        }
-        else if ((PIND & (1 << 6)) && (SelectPosition[1] == 0))
-        { // Right. Increase backlight setting
             ButtonTurn = 0;
-            BacklightIndexCopy++;
-            if (BacklightIndexCopy > 4)
-            {
-                BacklightIndexCopy = 0;
-            }
-            OCR0B = Backlight[BacklightIndexCopy];
-            u8g2_ClearBuffer(&u8g2);
-            SettingsDraw();
-            u8g2_SendBuffer(&u8g2);
-            ButtonTurn = 1;
+            (buttonsArray[DOWN_INDEX]).Pressed = 0;
         }
-        else if ((PIND & (1 << 7)) && (SelectPosition[1] == 0))
+        else if ((buttonsArray[RIGHT_INDEX]).Pressed)
+        { // Right.
+            if (SelectPosition[1] == 0) { // Increase backlight setting
+                BacklightIndexCopy++;
+                if (BacklightIndexCopy > 4)
+                {
+                    BacklightIndexCopy = 0;
+                }
+                OCR0B = Backlight[BacklightIndexCopy];
+                u8g2_ClearBuffer(&u8g2);
+                SettingsDraw();
+                u8g2_SendBuffer(&u8g2);
+            } else { // Into transformer turns ratio edit screen
+                Menu = 3;
+                SelectPosition[1] = 0;
+                u8g2_ClearBuffer(&u8g2);
+                TurnsRatioMenuDraw();
+                u8g2_SendBuffer(&u8g2);
+            }
+            ButtonTurn = 0;
+            (buttonsArray[RIGHT_INDEX]).Pressed = 0;
+        }
+        else if (((buttonsArray[LEFT_INDEX]).Pressed) && (SelectPosition[1] == 0))
         { // Left. Decrease backlight setting
             ButtonTurn = 0;
             BacklightIndexCopy--;
@@ -1786,46 +1882,64 @@ void Settings()
             u8g2_ClearBuffer(&u8g2);
             SettingsDraw();
             u8g2_SendBuffer(&u8g2);
-            ButtonTurn = 1;
+            ButtonTurn = 0;
+            (buttonsArray[LEFT_INDEX]).Pressed = 0;
         }
     }
 }
 
 void TurnsRatioMenuDraw()
 {
-    int DecimalOffset = 0; // Used to offset the x position due to the decimal
-
-    SettingsDraw(); // Display normal settings screen
-
-    char turnsRatioBuffer[10];
-    int turnsRatioInt = TurnsRatioCopy;
-    int afterDecimal = (TurnsRatioCopy - turnsRatioInt) * 100;
-    if (afterDecimal < 10)
-    {
-        sprintf(turnsRatioBuffer, "%d.0%d", (int)turnsRatioInt, (int)round(afterDecimal)); // Convert TurnsRatioCopy to string
-    }
-    else
-    {
-        sprintf(turnsRatioBuffer, "%d.%d", (int)turnsRatioInt, (int)round(afterDecimal)); // Convert TurnsRatioCopy to string
-    }
-    u8g2_DrawStr(&u8g2, 2, 51, turnsRatioBuffer);
-
-    // u8g2_SetFont(&u8g2, u8g2_font_VCR_OSD_mn); // Change to larger font
-    for (int i = 0; i < 5; i++)
-    { // Exact values yet to be confirmed
-        if (i == 2)
-        { // Account for decimal
-            DecimalOffset = 3;
-        }
-        u8g2_DrawTriangle(&u8g2, (i * 5) - 2 + DecimalOffset, 27, (i * 5) + DecimalOffset, 22, (i * 5) + 2 + DecimalOffset, 27); // Arrows
-        u8g2_DrawTriangle(&u8g2, (i * 5) - 2 + DecimalOffset, 46, (i * 5) + DecimalOffset, 51, (i * 5) + 2 + DecimalOffset, 46);
-        if (i == SelectPosition[0])
-        {
-            u8g2_SetDrawColor(&u8g2, 1);
-            u8g2_DrawBox(&u8g2, (i * 5) + DecimalOffset, 60, 5, 11);
-            u8g2_SetDrawColor(&u8g2, 2);
-        }
-    }
+    u8g2_SetDrawColor(&u8g2, 1);
+    u8g2_DrawBox(&u8g2, 0, 0, 128, 12);
+    
+    u8g2_SetDrawColor(&u8g2, 0);
+    u8g2_DrawStr(&u8g2, 1, 10, "Turns Ratio:");
+    char turnsRatioBuffer[20];
+    int turnsRatioInt = MenuSettings[5];
+    int afterDecimal = (MenuSettings[5]-turnsRatioInt)*1000;
+    if (afterDecimal < 10) {
+        sprintf(turnsRatioBuffer , "%d.00%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+    } else if ((afterDecimal < 100) && (afterDecimal >= 10)) {
+        sprintf(turnsRatioBuffer , "%d.0%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+    } else {
+		sprintf(turnsRatioBuffer , "%d.%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+	}
+    u8g2_DrawStr(&u8g2, 62, 10, turnsRatioBuffer);
+    
+    int DecimalOffset = 0;  // Used to offset the x position due to the decimal
+    int digitSpace = 16;
+	for (int i=0; i<5; i++) {
+        u8g2_SetDrawColor(&u8g2, 1);
+		if (i == 2) { // Account for decimal
+			DecimalOffset = 16;
+		}
+        int Offset = 21 + DecimalOffset;
+		u8g2_DrawTriangle(&u8g2, (i * digitSpace) + Offset, 21, (i * digitSpace) + 3 + Offset, 15, (i * digitSpace) + 7 + Offset, 21);    // Arrows
+		u8g2_DrawTriangle(&u8g2, (i * digitSpace) + Offset, 46, (i * digitSpace) + 3 + Offset, 51, (i * digitSpace) + 7 + Offset, 46);
+		if (i != SelectPosition[1]) {
+			u8g2_SetDrawColor(&u8g2, 0);
+            u8g2_DrawBox(&u8g2, (2 * digitSpace) + 17, 23, 16, 21);
+		}
+        u8g2_DrawBox(&u8g2, (i * digitSpace) + Offset - 4, 23, 16, 21);
+	}
+    
+    u8g2_SetDrawColor(&u8g2, 2);
+    u8g2_SetFont(&u8g2, u8g2_font_profont29_mr);
+    
+    char turnsRatioBuffer2[20];
+	turnsRatioInt = TurnsRatioCopy;
+	afterDecimal = (TurnsRatioCopy-turnsRatioInt)*1000;
+	if (afterDecimal < 10) {
+		sprintf(turnsRatioBuffer2, "%d.00%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+	} else if ((afterDecimal < 100) && (afterDecimal >= 10)) {
+		sprintf(turnsRatioBuffer2, "%d.0%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+	} else {
+		sprintf(turnsRatioBuffer2, "%d.%d", (int)turnsRatioInt, (int)round(afterDecimal));// Convert Measurement float value to string
+	}
+	u8g2_DrawStr(&u8g2, 18, 43, turnsRatioBuffer2);
+    
+    PCIconAndTime();
 }
 
 void TurnsRatioMenu()
@@ -1833,11 +1947,10 @@ void TurnsRatioMenu()
     TurnsRatioMenuDraw();
     if (ButtonTurn)
     {
-        if ((PINB & (1 << 1)))
+        if ((buttonsArray[ENTER_INDEX]).Pressed)
         { // Enter. Confirm New Turn Ratio
             u8g2_SetDrawColor(&u8g2, 0);
             u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
-            ButtonTurn = 0;
             MenuSettings[5] = TurnsRatioCopy;
             turnsRatio = MenuSettings[5];
             eepromUpdate(TURNS_RATIO_ADDRESS, (float)turnsRatio);
@@ -1846,22 +1959,24 @@ void TurnsRatioMenu()
             u8g2_ClearBuffer(&u8g2);
             SettingsDraw();
             u8g2_SendBuffer(&u8g2);
+            ButtonTurn = 0;
+            (buttonsArray[ENTER_INDEX]).Pressed = 0;
         }
-        else if ((PINB & (1 << 4)))
+        else if ((buttonsArray[BACK_INDEX]).Pressed)
         { // Back. Return without saving Turns Ratio changes
             u8g2_SetDrawColor(&u8g2, 0);
             u8g2_DrawBox(&u8g2, 0, 0, 128, 64);
-            ButtonTurn = 0;
+            TurnsRatioCopy = turnsRatio;
             Menu = 2;
             SelectPosition[1] = 1;
-            ButtonTurn = 1;
             u8g2_ClearBuffer(&u8g2);
             SettingsDraw();
             u8g2_SendBuffer(&u8g2);
-        }
-        else if ((PINB & (1 << 6)))
-        {
             ButtonTurn = 0;
+            (buttonsArray[BACK_INDEX]).Pressed = 0;
+        }
+        else if ((buttonsArray[UP_INDEX]).Pressed)
+        { // Up
             int digit = (TurnsRatioCopy / pow(10, 1 - (SelectPosition[1])));
             digit = digit % 10;
             if (digit == 9)
@@ -1875,14 +1990,14 @@ void TurnsRatioMenu()
             u8g2_ClearBuffer(&u8g2);
             TurnsRatioMenuDraw();
             u8g2_SendBuffer(&u8g2);
-            ButtonTurn = 1;
-        }
-        else if ((PINB & (1 << 7)))
-        { // Down
             ButtonTurn = 0;
+            (buttonsArray[UP_INDEX]).Pressed = 0;
+        }
+        else if ((buttonsArray[DOWN_INDEX]).Pressed)
+        { // Down
             int digit = (TurnsRatioCopy / pow(10, 1 - (SelectPosition[1])));
             digit = digit % 10;
-            if (digit == 9)
+            if (digit == 0)
             {                                                        // Check specific digit
                 TurnsRatioCopy += (90 / pow(10, SelectPosition[1])); // Down from 0, cycle to 9
             }
@@ -1893,11 +2008,11 @@ void TurnsRatioMenu()
             u8g2_ClearBuffer(&u8g2);
             TurnsRatioMenuDraw();
             u8g2_SendBuffer(&u8g2);
-            ButtonTurn = 1;
-        }
-        else if ((PIND & (1 << 6)))
-        { // Right
             ButtonTurn = 0;
+            (buttonsArray[DOWN_INDEX]).Pressed = 0;
+        }
+        else if ((buttonsArray[RIGHT_INDEX]).Pressed)
+        { // Right
             SelectPosition[1]++;
             if (SelectPosition[1] > 4)
             {
@@ -1906,11 +2021,11 @@ void TurnsRatioMenu()
             u8g2_ClearBuffer(&u8g2);
             TurnsRatioMenuDraw();
             u8g2_SendBuffer(&u8g2);
-            ButtonTurn = 1;
-        }
-        else if ((PIND & (1 << 7)))
-        { // Left
             ButtonTurn = 0;
+            (buttonsArray[RIGHT_INDEX]).Pressed = 0;
+        }
+        else if ((buttonsArray[LEFT_INDEX]).Pressed)
+        { // Left
             SelectPosition[1]--;
             if (SelectPosition[1] < 0)
             {
@@ -1919,7 +2034,8 @@ void TurnsRatioMenu()
             u8g2_ClearBuffer(&u8g2);
             TurnsRatioMenuDraw();
             u8g2_SendBuffer(&u8g2);
-            ButtonTurn = 1;
+            ButtonTurn = 0;
+            (buttonsArray[LEFT_INDEX]).Pressed = 0;
         }
     }
 }
@@ -1968,6 +2084,8 @@ int main(void)
 
         // *************************      LCD CODE      ******************************
 
+        buttonCheck();
+
         if (LcdTick && !Menu)
         {
             u8g2_ClearBuffer(&u8g2);
@@ -1978,21 +2096,17 @@ int main(void)
         }
         else if (Menu == 1)
         {
-            MeasurementSelect();
+            MeasurementSelect(measurements);
         }
         else if (Menu == 2)
         {
-            Settings();
+            Settings(measurements);
         }
         else if (Menu == 3)
         {
             TurnsRatioMenu();
         }
-        if (PIND & (1 << 2))
-        {
-            DrawPCIcon();
-        }
-        DrawTime();
+        
         if (LcdTick && !Menu)
         {
             u8g2_SendBuffer(&u8g2);
