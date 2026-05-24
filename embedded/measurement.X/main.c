@@ -155,7 +155,7 @@ volatile uint8_t tx_tail = 0;
 volatile uint16_t rawDCVoltageADC = 0;
 volatile uint16_t rawDCCurrentADC = 0;
 
-
+//For frequency and phase measurement
 volatile uint32_t periodTicks = 0;
 volatile uint32_t totalPeriodAccumulator = 0;
 volatile uint8_t cycleCounter = 0;
@@ -166,6 +166,9 @@ volatile uint16_t lastACCurrentValue = 512;
 volatile uint16_t lastVTimestamp = 0;
 volatile uint16_t vCrossingTime = 0;
 volatile uint16_t iCrossingTime = 0;
+
+static volatile uint16_t voltageMidpoint = 512;
+static volatile uint16_t currentMidpoint = 512;
 
 // STORED VARAIBLES FOR RMS MEASUREMENT
 // FOR AC VOLTAGE
@@ -663,15 +666,26 @@ void ADC_select_channel(uint8_t channel)
     ADMUX |= channel;
 }
 
+uint16_t calculate_midpoint_ADC(uint32_t sum, uint16_t count){
+    if (count == 0)
+    { // Prevent 0 division
+        return 0;
+    }
+    
+    uint16_t mean = (uint16_t)((float)sum / (float)count);
+    return mean;
+}
 
-void handle_frequency_logic(uint16_t reading, uint8_t channel)
+void handle_frequency_logic(uint16_t reading, uint8_t channel, uint16_t voltageMidpoint, uint16_t currentMidpoint)
 {
-    uint16_t midPoint = 512;
 
     if (channel == AC_VOLTAGE_CHANNEL)
     {
+        int32_t voltageLowThreshold  = (int32_t)voltageMidpoint - HYSTERESIS;
+        int32_t voltageHighThreshold = (int32_t)voltageMidpoint + HYSTERESIS;
+        
         // Detect zero Crossing for voltage
-        if (lastACValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS))
+        if ((lastACValue <= voltageLowThreshold) && (reading > voltageHighThreshold))
         {
             // Take the timestamp of this zero crossing and calculate time from previous crossing
             uint16_t currentTime = TCNT1;
@@ -695,8 +709,11 @@ void handle_frequency_logic(uint16_t reading, uint8_t channel)
 
     if (channel == AC_CURRENT_CHANNEL)
     {
+        int32_t currentLowThreshold  = (int32_t)currentMidpoint - HYSTERESIS;
+        int32_t currentHighThreshold = (int32_t)currentMidpoint + HYSTERESIS;
+        
         // Detect zero Crossing for current
-        if (lastACCurrentValue <= (midPoint - HYSTERESIS) && reading > (midPoint + HYSTERESIS))
+        if ((lastACCurrentValue <= currentLowThreshold) && (reading > currentHighThreshold))
         {
             // Take the timestamp
             iCrossingTime = TCNT1;
@@ -722,7 +739,7 @@ ISR(ADC_vect)
     if (!acProcessingBusy)
     {
         // Calculate frequency of voltage wave
-        handle_frequency_logic(reading, channel);
+        handle_frequency_logic(reading, channel, voltageMidpoint, currentMidpoint);
         // Save DC ADC readings
         if (channel == DC_VOLTAGE_CHANNEL)
         {
@@ -1133,6 +1150,8 @@ uint8_t process_measurements(float *measurements)
         uint16_t localIMin = acCurrentMin;
         
         //Frequency and Phase local timing snapshots
+        uint16_t localVoltageMidpoint = voltageMidpoint;
+        uint16_t localCurrentMidpoint = currentMidpoint;
         uint32_t localPeriodTicks = periodTicks;
         uint16_t localVCrossing   = vCrossingTime;
         uint16_t localICrossing   = iCrossingTime;
@@ -1144,6 +1163,20 @@ uint8_t process_measurements(float *measurements)
         acSampleCount = 0;
         acDataReady = 0;
         acProcessingBusy = 0; 
+        sei();
+        
+        //Calculate midpoint
+        if (localSamples > 0){
+            localVoltageMidpoint = calculate_midpoint_ADC(localVSum, localSamples);
+            localCurrentMidpoint = calculate_midpoint_ADC(localISum, localSamples);
+        }
+        else {
+            localVoltageMidpoint = 512;
+            localCurrentMidpoint = 512;
+        }
+        cli();
+        voltageMidpoint = localVoltageMidpoint;
+        currentMidpoint = localCurrentMidpoint;
         sei();
         
         // Calculate DC measurements
