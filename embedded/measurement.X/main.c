@@ -131,7 +131,7 @@ volatile uint8_t tx_tail = 0;
 #define PHASE_DIFFERENCE_ERROR_SUM 0.0f
 
 #define AC_VOLTAGE_PK_PK_ERROR_RATIO 1.0f
-#define AC_VOLTAGE_PK_PK_ERROR_SUM 1.0f
+#define AC_VOLTAGE_PK_PK_ERROR_SUM 0.0f
 
 #define AC_CURRENT_PK_PK_ERROR_RATIO 1.0f
 #define AC_CURRENT_PK_PK_ERROR_SUM 0.0f
@@ -205,6 +205,11 @@ uint8_t isLowCurrentMode = 0; //0 means high current mode, 1 means low current m
 volatile uint8_t isUnderLimit;            // 1 for is UL, 0 for not UL
 #define UNDER_LIMIT_CODE 37.0f            // Sending arbitrary number when UL
 #define CURRENT_UNDER_LIMIT_THRESHOLD 0.1 // when AC current is below 0.1, show UNDER_LIMIT_CODE
+
+// *********************      EXPONENTIAL FILTER      **************************
+#define PK_PK_SMOOTHING_FACTOR 0.95f
+#define DC_SMOOTHING_FACTOR 0.95f
+
 
 // ***********************      RTC VARIABLES      ****************************
 volatile rtc_time_t rtcCachedTime;
@@ -757,13 +762,6 @@ ISR(ADC_vect)
             }
 
             acSampleCount++;
-            if (acSampleCount >= NUM_AC_SAMPLES)
-            {
-                acDataReady = 1;
-                acProcessingBusy = 1;
-                
-                
-            }
         }
     }
 
@@ -773,6 +771,12 @@ ISR(ADC_vect)
     {
         ADCSelectedChannel = 0;
         areReadingsReady = 1;
+
+        if (!acProcessingBusy && (acSampleCount >= NUM_AC_SAMPLES))
+        {
+            acDataReady = 1;
+            acProcessingBusy = 1;
+        }
     }
 
     ADC_select_channel(ADCSelectedChannel);
@@ -780,34 +784,56 @@ ISR(ADC_vect)
     ADC_start_conversion();
 }
 
-// Converts the ADC reading into DC voltage, then calculates input DC voltage
-float calculate_DC_voltage(uint16_t ADCreading)
+float ADC_counts_to_meas(float ADCCounts)
 {
+    return ADCCounts * VREF / 1023.0f;
+}
 
+// Converts the ADC reading into DC voltage, then calculates input DC voltage
+float calculate_DC_voltage(uint16_t reading)
+{
+    
+    static float filteredCounts = -1.0f;
+        //Check if this is the first reading
+    if (filteredCounts < 0){
+        filteredCounts = (float)reading;
+    } 
+    else {
+        filteredCounts += (reading - filteredCounts) * DC_SMOOTHING_FACTOR;
+    }
+    
     float scalingRatio = (4.724f / 10.0f);
-
+    
     // Set convert ADC reading into voltage
-    float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
+    float Vout = ADC_counts_to_meas(filteredCounts);
 
-    float vin = (scaledVout / scalingRatio);
+    float vin = (Vout / scalingRatio);
     float vinCorrected = vin * DC_VOLTAGE_ERROR_RATIO + DC_VOLTAGE_ERROR_SUM;
     return vinCorrected;
 }
 
 // Converts the ADC reading into DC current, then calculates input DC current
-float calculate_DC_current(uint16_t ADCreading)
+float calculate_DC_current(uint16_t reading)
 {
+    static float filteredCounts = -1.0f;
+        //Check if this is the first reading
+    if (filteredCounts < 0){
+        filteredCounts = (float)reading;
+    } 
+    else {
+        filteredCounts += (reading - filteredCounts) * DC_SMOOTHING_FACTOR;
+    }
 
     float scalingRatio = 1.0f;
 
     // Set convert ADC reading into voltage
-    float scaledVout = ((float)ADCreading * VREF) / 1023.0f;
+    float Vout = ADC_counts_to_meas(filteredCounts);
 
-    float iIn = (scaledVout / scalingRatio);
+    float iIn = (Vout / scalingRatio);
     float iInCorrected = iIn * DC_CURRENT_ERROR_RATIO + DC_CURRENT_ERROR_SUM;
-
     return iInCorrected;
 }
+
 
 float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count)
 {
@@ -828,11 +854,6 @@ float calculate_RMS_ADC(uint32_t sum, uint32_t sumSq, uint16_t count)
     }
 
     return sqrtf(variance);
-}
-
-float ADC_counts_to_meas(float ADCCounts)
-{
-    return ADCCounts * VREF / 1023.0f;
 }
 
 float calculate_AC_voltage_RMS(uint32_t sum, uint32_t sumSq, uint16_t count)
@@ -1158,7 +1179,7 @@ uint8_t process_measurements(float *measurements)
 
         // Calculate pk to pk voltage and current
         measurements[MEAS_AC_VOLTAGE_PK_PK] = calculate_voltage_pk_pk(localVMax, localVMin);
-        measurements[MEAS_AC_VOLTAGE_PK_PK] = calculate_voltage_pk_pk(localIMax, localIMin);
+        measurements[MEAS_AC_CURRENT_PK_PK] = calculate_current_pk_pk(localIMax, localIMin);
         
         processedNewWindow = 1;
     }
@@ -1359,16 +1380,6 @@ void lcd_init(void)
     u8g2_SetFont(&u8g2, u8g2_font_prospero_nbp_tr);
     u8g2_SetDrawColor(&u8g2, 2);
 }
-
-void buttonInit(uint32_t buttonPin, int buttonIndex) {
-	(buttonsArray[buttonIndex]).buttonPin = buttonPin;
-	(buttonsArray[buttonIndex]).buttonState = 0;
-	(buttonsArray[buttonIndex]).oldButtonState = 0;
-	(buttonsArray[buttonIndex]).detectedButtonState = 0;
-	(buttonsArray[buttonIndex]).buttonTick = 0;
-	(buttonsArray[buttonIndex]).Pressed = 0;
-}
-
 
 void init()
 {
@@ -1817,7 +1828,7 @@ void Settings(float* measurements)
             }
             ButtonTurn = 1;
         }
-        else if (((buttonsArray[LEFT_INDEX]).Pressed) && (SelectPosition[1] == 0))
+        else if (LEFT)
         { // Left.
             ButtonTurn = 0;
             if (SelectPosition[1] == 0) { // Decrease backlight setting
@@ -1968,7 +1979,7 @@ void TurnsRatioMenu()
             u8g2_SendBuffer(&u8g2);
             ButtonTurn = 1;
         }
-        else if ((RIGHT)
+        else if (RIGHT)
         { // Right
             ButtonTurn = 0;
             SelectPosition[1]++;
