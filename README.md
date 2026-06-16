@@ -8,7 +8,7 @@ A high precision digital power meter designed to sample voltage and current tele
 ![Power Meter Prototype](./assets/pcb.jpg)
 
 ### Hardware Documentation
-* [PCB Schematic and Layout (PDF)](./assets/PCB_Artwork.pdf)
+<img src="./assets/pcb.jpg" width="450" alt="Finished Power Meter Prototype">
 
 ## The Engineering Team & Contributions
 
@@ -24,7 +24,8 @@ This project was developed by a collaborative 4 person engineering team. Individ
 ### 1. Analogue Measurement Circuit Design
 * **Signal Conditioning:** Designed and implemented a five stage pipeline matching analogue to digital converter constraints to safely process AC and DC voltage and current waveforms.
 * **Iterative Prototyping:** Conducted rigorous breadboard testing and design iterations to select optimal scaling and biasing topologies (See the beautiful chaos below).
-![Breadboard Prototyping and Validation Stage](./assets/Breadboard)
+
+<img src="./assets/Breadboard" width="450" alt="Breadboard Prototyping and Validation Stage">
 
 * **Hardware Debugging:** Resolved circuit loading effects by introducing active operational amplifier buffering stages.
 * **Power Subsystem Redesign:** Eliminated amplifier saturation by upgrading supply rails to 10V and integrating a 5V regulator for the ATmega microcontroller and display.
