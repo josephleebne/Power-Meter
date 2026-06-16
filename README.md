@@ -5,10 +5,10 @@ This repository is a  mirror of a team project developed for **ENGG2800**.
 A high precision digital power meter designed to sample voltage and current telemetry from a load, calculate real time electrical parameters, and stream data to a localised GUI for monitoring and analysis. The system bridges custom hardware instrumentation with embedded processing and local host application interfaces.
 
 ### Finished Prototype
-![Finished Power Meter Prototype](assets/pcb.jpg)
+![Power Meter Prototype](assets/pcb.jpg)
 
 ### Hardware Documentation
-* [PCB Color Artwork (PDF)](assets/PCB_Artwork.pdf)
+* [PCB Schematic and Layout (PDF)](assets/PCB_Artwork.pdf)
 
 ## The Engineering Team & Contributions
 
