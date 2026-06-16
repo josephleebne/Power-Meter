@@ -5,10 +5,10 @@ This repository is a  mirror of a team project developed for **ENGG2800**.
 A high precision digital power meter designed to sample voltage and current telemetry from a load, calculate real time electrical parameters, and stream data to a localised GUI for monitoring and analysis. The system bridges custom hardware instrumentation with embedded processing and local host application interfaces.
 
 ### Finished Prototype
-![Power Meter Prototype](assets/pcb.jpg)
+![Power Meter Prototype](./assets/pcb.jpg)
 
 ### Hardware Documentation
-* [PCB Schematic and Layout (PDF)](assets/PCB_Artwork.pdf)
+* [PCB Schematic and Layout (PDF)](./assets/PCB_Artwork.pdf)
 
 ## The Engineering Team & Contributions
 
@@ -24,7 +24,7 @@ This project was developed by a collaborative 4 person engineering team. Individ
 ### 1. Analogue Measurement Circuit Design
 * **Signal Conditioning:** Designed and implemented a five stage pipeline matching analogue to digital converter constraints to safely process AC and DC voltage and current waveforms.
 * **Iterative Prototyping:** Conducted rigorous breadboard testing and design iterations to select optimal scaling and biasing topologies (See the beautiful chaos below).
-![Breadboard Prototyping and Validation Stage](assets/Breadboard)
+![Breadboard Prototyping and Validation Stage](./assets/Breadboard)
 
 * **Hardware Debugging:** Resolved circuit loading effects by introducing active operational amplifier buffering stages.
 * **Power Subsystem Redesign:** Eliminated amplifier saturation by upgrading supply rails to 10V and integrating a 5V regulator for the ATmega microcontroller and display.
@@ -41,7 +41,7 @@ This project was developed by a collaborative 4 person engineering team. Individ
 * **BOM Generation:** Compiled the final engineering Bill of Materials, cross referencing datasheets to guarantee exact footprint matches and proper component sourcing.
 
 #### Bill of Materials (BOM)
-* [BOM](assets/BOM.pdf)
+* [BOM](./assets/BOM.pdf)
 
 ## Repository Architecture
 
